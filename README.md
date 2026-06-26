@@ -10,7 +10,7 @@ On each run the script:
 
 1. Reads source URLs from `TRACKED_SOURCES.md`
 2. Fetches each source using a source-appropriate strategy (RSS, dedicated API, HTML scraping)
-3. Extracts paper links (arXiv, OpenReview, ACL Anthology, PMLR)
+3. Extracts paper links (arXiv, OpenReview, ACL Anthology, PMLR, and venue-specific URLs for conferences and journals)
 4. Enriches each paper with metadata — title, authors, abstract, keywords — via the arXiv Atom API or OpenReview API
 5. Filters out papers outside AI/ML when the source is not a trusted AI/ML venue
 6. Skips any paper URL already recorded in the current month's seen-papers log
@@ -28,7 +28,7 @@ Both output files are tab-separated (TSV) with the following columns:
 | `date_seen` | Date the paper was first discovered (YYYYMMDD) |
 | `source_name` | Human-readable name of the source |
 | `source_url` | URL of the source that surfaced the paper |
-| `paper_url` | Canonical URL of the paper |
+| `paper_url` | Canonical URL of the paper (arXiv, OpenReview, ACL Anthology, PMLR, or publisher page for journal/conference papers not on arXiv) |
 | `title` | Paper title |
 | `authors` | Comma-separated author names |
 | `abstract` | Paper abstract (where available) |
@@ -40,26 +40,29 @@ Both output files are tab-separated (TSV) with the following columns:
 
 ## Usage
 
+At least one group must be specified. Use `all` to check every source.
+
 ```bash
-python paper_searcher.py [GROUP ...]
+python paper_searcher.py <GROUP> [GROUP ...]
 ```
 
-With no arguments, all source groups are checked. Pass one or more group names to limit the run:
-
 ```bash
-python paper_searcher.py                        # check all sources (default)
+python paper_searcher.py all                    # every source
 python paper_searcher.py curated                # curated feeds only
 python paper_searcher.py educational            # university lab pages only
 python paper_searcher.py corporate              # industry lab pages only
 python paper_searcher.py uncurated              # algorithmic/high-volume feeds only
+python paper_searcher.py conferences            # conference proceedings only
+python paper_searcher.py journals               # peer-reviewed journals only
 python paper_searcher.py curated uncurated      # multiple groups combined
+python paper_searcher.py conferences journals   # conferences and journals together
 ```
 
 ---
 
 ## Source groups
 
-Sources are divided into four groups, matching the sections in `TRACKED_SOURCES.md`.
+Sources are divided into six groups, matching the sections in `TRACKED_SOURCES.md`.
 
 ### `curated`
 
@@ -84,6 +87,24 @@ Manually or community-curated feeds with a human editorial layer. Low volume, hi
 | AI Alignment Forum | Irregular | Safety and alignment research |
 | r/MachineLearning | Social | Community-voted Reddit posts |
 | Papers With Code | Social | Weekly digest + latest papers |
+
+### `conferences`
+
+Top-tier and second-tier AI/ML conference proceedings. Papers are fetched from the venue's official proceedings host (OpenReview, PMLR, ACL Anthology, CVF Open Access, etc.).
+
+**Tier 1** — NeurIPS, ICML, ICLR, CVPR, ACL, ICCV
+
+**Tier 2** — AAAI, EMNLP, ECCV, NAACL, AISTATS, UAI, ICANN, IJCAI, CoRL, COLING, INTERSPEECH
+
+Year-specific URLs (CVPR, ICLR, ICML volume, CoRL, INTERSPEECH, IJCAI) need to be updated annually in `TRACKED_SOURCES.md`.
+
+### `journals`
+
+Peer-reviewed AI/ML journals. Papers are fetched via each publisher's RSS feed where available. When a paper is also on arXiv, the arXiv URL is used as the canonical `paper_url`; otherwise the publisher's article page is used.
+
+**Tier 1** — JMLR, IEEE TPAMI, Nature Machine Intelligence, Artificial Intelligence (Elsevier)
+
+**Tier 2** — IEEE TNNLS, IJCV (Springer), Pattern Recognition (Elsevier), Neural Networks (Elsevier), Machine Learning (Springer), IEEE TIP
 
 ### `educational`
 
@@ -122,10 +143,17 @@ High-volume or algorithmic feeds. Useful for breadth but noisier than curated so
 | Paper venue | Title & authors | Abstract | Keywords |
 |-------------|----------------|----------|----------|
 | arXiv | arXiv Atom API | arXiv Atom API | arXiv category codes (e.g. `cs.LG, cs.CL`) |
-| OpenReview | OpenReview API | OpenReview API | `keywords` / `topics` / `keyphrases` field |
+| OpenReview (individual papers) | OpenReview API | OpenReview API | `keywords` / `topics` / `keyphrases` field |
+| OpenReview (venue/group pages) | OpenReview API | OpenReview API | — |
 | Hugging Face daily papers | HF API | HF API (`summary`) | — |
 | Distill.pub | RSS feed | RSS feed (`summary`) | — |
-| ACL Anthology, PMLR | URL extraction only | — | — |
+| ACL Anthology | URL extraction only | — | — |
+| PMLR | HTML title from listing page | — | — |
+| IEEE journals | RSS feed | RSS feed (`summary`) | — |
+| Springer journals | RSS feed | RSS feed (`summary`) | — |
+| Nature journals | RSS feed | RSS feed (`summary`) | — |
+| Elsevier / ScienceDirect | RSS feed (where accessible) | RSS feed (`summary`) | — |
+| JMLR | RSS feed (`jmlr.xml`) | RSS feed (`summary`) | — |
 
 ---
 

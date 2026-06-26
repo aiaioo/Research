@@ -50,6 +50,69 @@ These aren't standalone sites but reliably surface top papers first:
 
 ---
 
+## Tier 1 Conferences
+
+Most prestigious AI/ML venues by acceptance rate, citation impact, and community standing. URLs point to proceedings or paper-listing pages for direct scraping; year-specific URLs (CVPR, ICLR, etc.) should be updated annually.
+
+| Conference | Full Name | Cadence | URL | Notes |
+|-----------|-----------|---------|-----|-------|
+| NeurIPS | Neural Information Processing Systems | Annual (Dec) | https://papers.nips.cc | Largest general ML conference; recent years also on OpenReview |
+| ICML | International Conference on Machine Learning | Annual (Jul) | https://proceedings.mlr.press/v235/ | All proceedings on PMLR; update volume number each year |
+| ICLR | International Conference on Learning Representations | Annual (May) | https://openreview.net/group?id=ICLR.cc/2025/Conference | Fully open review; update year in URL annually |
+| CVPR | IEEE/CVF Conference on Computer Vision and Pattern Recognition | Annual (Jun) | https://openaccess.thecvf.com/CVPR2025 | Largest CV conference; CVF open access; update year annually |
+| ACL | Annual Meeting of the Association for Computational Linguistics | Annual (Jul–Aug) | https://aclanthology.org/venues/acl/ | Top NLP venue; full proceedings on ACL Anthology |
+| ICCV | IEEE/CVF International Conference on Computer Vision | Biennial (odd years, Oct) | https://openaccess.thecvf.com/ICCV2023 | Biennial; next edition ICCV 2025 — update URL when available |
+
+---
+
+## Tier 2 Conferences
+
+High-quality venues with broad reach; strong for applied work, specific subfields, and cross-disciplinary AI research.
+
+| Conference | Full Name | Cadence | URL | Notes |
+|-----------|-----------|---------|-----|-------|
+| AAAI | AAAI Conference on Artificial Intelligence | Annual (Feb) | https://ojs.aaai.org/index.php/AAAI/issue/archive | Broad AI; oldest major AI conference |
+| EMNLP | Empirical Methods in Natural Language Processing | Annual (Nov–Dec) | https://aclanthology.org/venues/emnlp/ | Strong empirical NLP; ACL Anthology proceedings |
+| ECCV | European Conference on Computer Vision | Biennial (even years, Sep–Oct) | https://www.ecva.net/papers.php | Flagship EU CV conference; open-access via ECVA |
+| NAACL | North American Chapter of the ACL | Annual (Jun) | https://aclanthology.org/venues/naacl/ | NLP; ACL Anthology proceedings |
+| AISTATS | International Conference on AI and Statistics | Annual (May) | https://proceedings.mlr.press/v238/ | Theory-heavy; probabilistic methods; PMLR; update volume annually |
+| UAI | Conference on Uncertainty in Artificial Intelligence | Annual (Jul–Aug) | https://proceedings.mlr.press/v244/ | Bayesian methods, graphical models; PMLR; update volume annually |
+| ICANN | International Conference on Artificial Neural Networks | Annual (Sep) | https://link.springer.com/conference/icann | Neural networks; organised by ENNS; proceedings in Springer LNCS |
+| IJCAI | International Joint Conference on Artificial Intelligence | Annual (Aug) | https://www.ijcai.org/proceedings/2024 | Broad AI; long-running international conference; update year annually |
+| CoRL | Conference on Robot Learning | Annual (Nov) | https://openreview.net/group?id=robot-learning.org/CoRL/2024/Conference | Robotics + ML; OpenReview proceedings; update year annually |
+| COLING | International Conference on Computational Linguistics | Biennial (even years, May) | https://aclanthology.org/venues/coling/ | Linguistics-oriented NLP; ACL Anthology |
+| INTERSPEECH | ISCA International Speech Communication Conference | Annual (Sep) | https://www.isca-archive.org/interspeech_2024/index.html | Top speech and spoken language venue; update year annually |
+
+---
+
+## Tier 1 Journals
+
+Highest-impact peer-reviewed journals in AI/ML. Publication here signals foundational or high-quality work.
+
+| Journal | Publisher | URL | Notes |
+|---------|-----------|-----|-------|
+| Journal of Machine Learning Research (JMLR) | JMLR Inc. | https://www.jmlr.org | Free open-access flagship ML journal since 2000; no publication fees |
+| IEEE Trans. on Pattern Analysis and Machine Intelligence (TPAMI) | IEEE | https://ieeexplore.ieee.org/xpl/RecentIssue.jsp?punumber=34 | Highest-impact CV/ML journal; broad scope |
+| Nature Machine Intelligence | Nature Portfolio | https://www.nature.com/natmachintell | High-impact broad AI journal; launched 2019 |
+| Artificial Intelligence | Elsevier | https://www.sciencedirect.com/journal/artificial-intelligence | Oldest AI journal (est. 1970); broad scope; top theoretical work |
+
+---
+
+## Tier 2 Journals
+
+Frequently cited journals across ML sub-disciplines; good for applied and domain-specific work.
+
+| Journal | Publisher | URL | Notes |
+|---------|-----------|-----|-------|
+| IEEE Trans. on Neural Networks and Learning Systems (TNNLS) | IEEE | https://ieeexplore.ieee.org/xpl/RecentIssue.jsp?punumber=5962385 | High-volume; deep learning and neural architectures |
+| International Journal of Computer Vision (IJCV) | Springer | https://link.springer.com/journal/11263 | Companion to ICCV; extended CV papers; high impact |
+| Pattern Recognition | Elsevier | https://www.sciencedirect.com/journal/pattern-recognition | Classic PR/ML journal; broad scope |
+| Neural Networks | Elsevier | https://www.sciencedirect.com/journal/neural-networks | Neuroscience-informed ML; architectures and theory |
+| Machine Learning | Springer | https://link.springer.com/journal/10994 | Springer's flagship ML journal; theory and methods |
+| IEEE Transactions on Image Processing (TIP) | IEEE | https://ieeexplore.ieee.org/xpl/RecentIssue.jsp?punumber=83 | Image processing and CV; high volume and citation count |
+
+---
+
 ## University AI / ML Research Groups
 
 Groups consistently producing high-impact work. Best followed via their lab website publications page and the PI's X/Twitter feed.

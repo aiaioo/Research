@@ -8,7 +8,7 @@ papers/seen_papers_YYYYMM.tsv (title, authors, and URL only — not the paper it
 
 Usage: python check_papers.py <GROUP> [GROUP ...]
 
-  Groups: curated  uncurated  educational  corporate  all
+  Groups: curated  uncurated  educational  corporate  conferences  journals  all
 
   At least one group must be specified.  Use 'all' to check every source.
 """
@@ -89,6 +89,19 @@ TRUSTED_AI_ML_HOSTS = frozenset({
     "arxiv-sanity-lite.com",
     "alignmentforum.org",
     "arxiv.org",
+    # conference proceedings
+    "papers.nips.cc",
+    "openaccess.thecvf.com",
+    "ojs.aaai.org",
+    "ecva.net",
+    "ijcai.org",
+    "isca-archive.org",
+    # peer-reviewed journals
+    "jmlr.org",
+    "ieeexplore.ieee.org",
+    "link.springer.com",
+    "nature.com",
+    "sciencedirect.com",
 })
 
 def is_ai_ml(p: dict, source_url: str = "") -> bool:
@@ -102,8 +115,12 @@ def is_ai_ml(p: dict, source_url: str = "") -> bool:
     paper_url = p.get("paper_url", "")
 
     # Non-arXiv AI/ML venues are inherently relevant
-    if any(d in paper_url for d in ("openreview.net", "aclanthology.org",
-                                     "proceedings.mlr.press", "distill.pub")):
+    if any(d in paper_url for d in (
+        "openreview.net", "aclanthology.org", "proceedings.mlr.press", "distill.pub",
+        "papers.nips.cc", "openaccess.thecvf.com", "ojs.aaai.org", "ecva.net",
+        "ijcai.org", "isca-archive.org", "jmlr.org",
+        "ieeexplore.ieee.org", "link.springer.com", "nature.com", "sciencedirect.com",
+    )):
         return True
 
     # Source is a known curated AI/ML feed — trust it without a category check
@@ -629,6 +646,333 @@ def scrape_semantic_scholar(url: str) -> list:
         print(f"    [!] Semantic Scholar API: {e}", file=sys.stderr)
         return []
 
+def scrape_openreview_venue(url: str) -> list:
+    """
+    OpenReview venue page (openreview.net/group?id=...) — queries the v2 then v1
+    OpenReview API for all submissions in the venue.
+    """
+    m = re.search(r"id=([^&\s]+)", url)
+    if not m:
+        return scrape_html(url)
+    venue_id = m.group(1)
+    out = []
+    for api_base in ("https://api2.openreview.net", "https://api.openreview.net"):
+        for suffix in ("/-/Submission", "/-/Blind_Submission", "/-/Camera_Ready_Submission"):
+            try:
+                api = f"{api_base}/notes?invitation={venue_id}{suffix}&limit=1000&offset=0"
+                r   = SESSION.get(api, timeout=20)
+                r.raise_for_status()
+                notes = r.json().get("notes", [])
+                for note in notes:
+                    content  = note.get("content", {})
+                    title    = content.get("title", "")
+                    if isinstance(title, dict):    title    = title.get("value", "")
+                    abstract = content.get("abstract", "")
+                    if isinstance(abstract, dict): abstract = abstract.get("value", "")
+                    authors_raw = content.get("authors", [])
+                    if isinstance(authors_raw, dict): authors_raw = authors_raw.get("value", [])
+                    authors = ", ".join(authors_raw) if isinstance(authors_raw, list) else ""
+                    note_id = note.get("id", "")
+                    if note_id:
+                        out.append({
+                            "paper_url": f"https://openreview.net/forum?id={note_id}",
+                            "title":     title,
+                            "authors":   authors,
+                            "abstract":  abstract,
+                        })
+                if out:
+                    return out
+            except Exception:
+                pass
+        if out:
+            break
+    if not out:
+        print(f"    [–] OpenReview venue {venue_id}: no papers via API; falling back to HTML",
+              file=sys.stderr)
+        return scrape_html(url)
+    return out
+
+
+def scrape_pmlr_volume(url: str) -> list:
+    """
+    PMLR volume page (proceedings.mlr.press/vNNN/) — extracts relative paper links
+    and converts them to canonical absolute PMLR URLs.  Also picks up any arXiv links
+    that appear on the listing page.
+    """
+    try:
+        r    = SESSION.get(url, timeout=20)
+        base = "https://proceedings.mlr.press"
+        out  = extract_papers(r.text)          # catches any inline arXiv links
+        seen = {p["paper_url"] for p in out}
+        soup = BeautifulSoup(r.text, "html.parser")
+        for a in soup.find_all("a", href=re.compile(r"^/v\d+/[\w\-]+\.html$")):
+            full = base + a["href"]
+            if full not in seen:
+                seen.add(full)
+                out.append({"paper_url": full, "title": a.get_text(strip=True),
+                            "authors": "", "abstract": ""})
+        return out
+    except Exception as e:
+        print(f"    [!] PMLR: {e}", file=sys.stderr)
+        return []
+
+
+def scrape_neurips(url: str) -> list:
+    """
+    papers.nips.cc — static HTML archive of all NeurIPS papers.
+    For years 2022+ also tries the OpenReview API when a year is in the URL.
+    """
+    year_m = re.search(r"/(\d{4})", url)
+    if year_m and int(year_m.group(1)) >= 2022:
+        or_papers = scrape_openreview_venue(
+            f"https://openreview.net/group?id=NeurIPS.cc/{year_m.group(1)}/Conference"
+        )
+        if or_papers:
+            return or_papers
+    try:
+        return extract_papers(SESSION.get(url, timeout=20).text)
+    except Exception as e:
+        print(f"    [!] NeurIPS: {e}", file=sys.stderr)
+        return []
+
+
+def scrape_cvf(url: str) -> list:
+    """
+    CVF Open Access (openaccess.thecvf.com) — conference index pages contain
+    arXiv IDs embedded in author/abstract links for many papers.
+    """
+    try:
+        return extract_papers(SESSION.get(url, timeout=20).text)
+    except Exception as e:
+        print(f"    [!] CVF: {e}", file=sys.stderr)
+        return []
+
+
+def scrape_jmlr(url: str) -> list:
+    """JMLR — RSS at jmlr.org/jmlr.xml; falls back to HTML if RSS is empty."""
+    try:
+        feed = parse_feed("https://jmlr.org/jmlr.xml")
+        out  = []
+        for entry in feed.entries:
+            blob = rss_blob(entry)
+            ax   = extract_papers(blob)
+            if ax:
+                out.extend(ax)
+            else:
+                paper_url = entry.get("link", "").strip()
+                if not paper_url:
+                    continue
+                title   = entry.get("title", "")
+                authors = ", ".join(a.get("name", "") for a in entry.get("authors", []))
+                abstract = entry.get("summary", "")
+                out.append({"paper_url": paper_url, "title": title,
+                            "authors": authors, "abstract": abstract})
+        if out:
+            return out
+    except Exception:
+        pass
+    print("    [–] JMLR RSS returned no entries; trying HTML", file=sys.stderr)
+    return scrape_html(url)
+
+
+def scrape_aaai_proceedings(url: str) -> list:
+    """
+    AAAI proceedings (ojs.aaai.org) — scrapes the issue archive for arXiv links.
+    Falls back to the latest issue page when no papers are found on the archive page.
+    """
+    try:
+        r    = SESSION.get(url, timeout=20)
+        out  = extract_papers(r.text)
+        if not out:
+            soup = BeautifulSoup(r.text, "html.parser")
+            issue_hrefs = [
+                a["href"] for a in soup.find_all("a", href=re.compile(r"/index\.php/AAAI/issue/view/\d+"))
+                if a.get("href")
+            ]
+            if issue_hrefs:
+                latest = issue_hrefs[0]
+                if not latest.startswith("http"):
+                    latest = "https://ojs.aaai.org" + latest
+                r2  = SESSION.get(latest, timeout=15)
+                out = extract_papers(r2.text)
+        return out
+    except Exception as e:
+        print(f"    [!] AAAI: {e}", file=sys.stderr)
+        return []
+
+
+def scrape_ijcai(url: str) -> list:
+    """IJCAI proceedings — scrapes proceedings HTML for arXiv/DOI links."""
+    try:
+        r   = SESSION.get(url, timeout=20)
+        out = extract_papers(r.text)
+        if not out:
+            soup = BeautifulSoup(r.text, "html.parser")
+            proc_hrefs = [
+                a["href"] for a in soup.find_all("a", href=re.compile(r"/proceedings/\d{4}"))
+                if a.get("href")
+            ]
+            if proc_hrefs:
+                latest = max(proc_hrefs)
+                full   = latest if latest.startswith("http") else "https://www.ijcai.org" + latest
+                r2     = SESSION.get(full, timeout=15)
+                out    = extract_papers(r2.text)
+        return out
+    except Exception as e:
+        print(f"    [!] IJCAI: {e}", file=sys.stderr)
+        return []
+
+
+def scrape_ecva(url: str) -> list:
+    """ECVA papers page (ecva.net) — scrapes HTML for arXiv links."""
+    try:
+        return extract_papers(SESSION.get(url, timeout=20).text)
+    except Exception as e:
+        print(f"    [!] ECVA: {e}", file=sys.stderr)
+        return []
+
+
+def scrape_isca(url: str) -> list:
+    """ISCA Archive (INTERSPEECH) — scrapes index HTML for arXiv links."""
+    try:
+        return extract_papers(SESSION.get(url, timeout=20).text)
+    except Exception as e:
+        print(f"    [!] ISCA: {e}", file=sys.stderr)
+        return []
+
+
+def scrape_ieee_journal(url: str) -> list:
+    """
+    IEEE Xplore journal — uses per-journal RSS (TOC{punumber}.XML).
+    Returns arXiv papers when available; falls back to IEEE Xplore link from RSS.
+    """
+    pn = re.search(r"punumber=(\d+)", url)
+    if pn:
+        rss_url = f"https://ieeexplore.ieee.org/rss/TOC{pn.group(1)}.XML"
+        try:
+            feed = parse_feed(rss_url)
+            out  = []
+            for entry in feed.entries[:60]:
+                blob = rss_blob(entry)
+                ax   = extract_papers(blob)
+                if ax:
+                    out.extend(ax)
+                else:
+                    link  = entry.get("link", "").strip()
+                    title = entry.get("title", "")
+                    auth  = ", ".join(a.get("name", "") for a in entry.get("authors", []))
+                    abstr = entry.get("summary", "")
+                    if link:
+                        out.append({"paper_url": link, "title": title,
+                                    "authors": auth, "abstract": abstr})
+            if out:
+                return out
+        except Exception:
+            pass
+    print(f"    [–] IEEE journal: RSS unavailable for {url}", file=sys.stderr)
+    return []
+
+
+def scrape_springer_journal(url: str) -> list:
+    """
+    Springer journal (link.springer.com/journal/N) — uses Springer RSS.
+    Returns arXiv papers when available; falls back to Springer article link.
+    """
+    jn = re.search(r"journal/(\d+)", url)
+    if jn:
+        rss_url = (
+            f"https://link.springer.com/search.rss"
+            f"?facet-content-type=Article&journal={jn.group(1)}&sortOrder=newestFirst"
+        )
+        try:
+            feed = parse_feed(rss_url)
+            out  = []
+            for entry in feed.entries[:30]:
+                blob = rss_blob(entry)
+                ax   = extract_papers(blob)
+                if ax:
+                    out.extend(ax)
+                else:
+                    link  = entry.get("link", "").strip()
+                    title = entry.get("title", "")
+                    auth  = ", ".join(a.get("name", "") for a in entry.get("authors", []))
+                    abstr = entry.get("summary", "")
+                    if link:
+                        out.append({"paper_url": link, "title": title,
+                                    "authors": auth, "abstract": abstr})
+            if out:
+                return out
+        except Exception:
+            pass
+    return scrape_rss(url) or scrape_html(url)
+
+
+def scrape_nature_journal(url: str) -> list:
+    """
+    Nature journal (nature.com/SLUG) — uses Nature RSS at /SLUG.rss.
+    Returns arXiv papers when available; falls back to Nature article link.
+    """
+    slug    = urlparse(url).path.strip("/")
+    rss_url = f"https://www.nature.com/{slug}.rss"
+    try:
+        feed = parse_feed(rss_url)
+        out  = []
+        for entry in feed.entries[:30]:
+            blob = rss_blob(entry)
+            ax   = extract_papers(blob)
+            if ax:
+                out.extend(ax)
+            else:
+                link  = entry.get("link", "").strip()
+                title = entry.get("title", "")
+                auth  = ", ".join(a.get("name", "") for a in entry.get("authors", []))
+                abstr = entry.get("summary", "")
+                if link:
+                    out.append({"paper_url": link, "title": title,
+                                "authors": auth, "abstract": abstr})
+        if out:
+            return out
+    except Exception:
+        pass
+    return scrape_rss(url)
+
+
+def scrape_elsevier_journal(url: str) -> list:
+    """
+    Elsevier ScienceDirect journal — tries common RSS patterns.
+    Returns arXiv papers when available; falls back to ScienceDirect article link.
+    """
+    slug = urlparse(url).path.rstrip("/").split("/")[-1]
+    for rss_url in (
+        f"https://www.sciencedirect.com/journal/{slug}/rss",
+        f"https://rss.sciencedirect.com/publication/science/{slug}",
+    ):
+        try:
+            feed = parse_feed(rss_url)
+            if not feed.entries:
+                continue
+            out = []
+            for entry in feed.entries[:30]:
+                blob = rss_blob(entry)
+                ax   = extract_papers(blob)
+                if ax:
+                    out.extend(ax)
+                else:
+                    link  = entry.get("link", "").strip()
+                    title = entry.get("title", "")
+                    auth  = ", ".join(a.get("name", "") for a in entry.get("authors", []))
+                    abstr = entry.get("summary", "")
+                    if link:
+                        out.append({"paper_url": link, "title": title,
+                                    "authors": auth, "abstract": abstr})
+            if out:
+                return out
+        except Exception:
+            pass
+    print(f"    [–] Elsevier: no accessible RSS for {url}", file=sys.stderr)
+    return []
+
+
 def scrape_lab_page(url: str) -> list:
     """
     Generic scraper for university and industry lab pages.
@@ -785,6 +1129,22 @@ def dispatch(name: str, url: str) -> list:
     if "reddit.com/r/"          in full:           return scrape_reddit(url)
     if "semanticscholar.org"    in host:           return scrape_semantic_scholar(url)
 
+    if "openreview.net" in host and ("group?id=" in full or "venue?id=" in full):
+                                                   return scrape_openreview_venue(url)
+    if "proceedings.mlr.press"  in host:           return scrape_pmlr_volume(url)
+    if "papers.nips.cc"         in host:           return scrape_neurips(url)
+    if "openaccess.thecvf.com"  in host:           return scrape_cvf(url)
+    if "jmlr.org"               in host:           return scrape_jmlr(url)
+    if "ojs.aaai.org"           in host:           return scrape_aaai_proceedings(url)
+    if "ijcai.org"              in host:           return scrape_ijcai(url)
+    if "ecva.net"               in host:           return scrape_ecva(url)
+    if "isca-archive.org"       in host:           return scrape_isca(url)
+    if "ieeexplore.ieee.org"    in host:           return scrape_ieee_journal(url)
+    if "link.springer.com"      in host and ("/journal/" in full or "/conference/" in full):
+                                                   return scrape_springer_journal(url)
+    if "nature.com"             in host:           return scrape_nature_journal(url)
+    if "sciencedirect.com"      in host:           return scrape_elsevier_journal(url)
+
     if any(d in host for d in ("substack.com", "interconnects.ai", "sebastianraschka.com")):
         return scrape_substack(url)
 
@@ -805,6 +1165,10 @@ _SECTION_GROUP_MAP = [
     ("weekly",              "curated"),
     ("bi-weekly",           "curated"),
     ("social feeds",        "curated"),
+    ("tier 1 conference",   "conferences"),
+    ("tier 2 conference",   "conferences"),
+    ("tier 1 journal",      "journals"),
+    ("tier 2 journal",      "journals"),
     ("university",          "educational"),
     ("industry-affiliated", "corporate"),
     ("algorithmic",         "uncurated"),
@@ -860,8 +1224,8 @@ def main() -> None:
         "groups",
         nargs="*",
         metavar="GROUP",
-        choices=["curated", "uncurated", "educational", "corporate", "all"],
-        help="Source groups to check: curated, uncurated, educational, corporate, all",
+        choices=["curated", "uncurated", "educational", "corporate", "conferences", "journals", "all"],
+        help="Source groups to check: curated, uncurated, educational, corporate, conferences, journals, all",
     )
     args = parser.parse_args()
 
