@@ -1,0 +1,7 @@
+# GitHub repositories containing memory-related paper lists.
+# Format: <name>  <github-url>
+# Lines starting with # are ignored.
+
+XieLab	https://github.com/xie-lab-ml/deep-learning-dynamics-paper-list
+AdaptiveFoundation  https://github.com/OptimalFoundation/awesome-optimizers
+FSL https://github.com/Stonesusu/FewShotPapers

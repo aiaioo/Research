@@ -1,0 +1,14 @@
+# Speech and voice model paper sources.
+# Format: <name>  <url>
+# Supported URL types:
+#   https://github.com/<owner>/<repo>
+#   https://scholar.google.com/citations?user=<id>    (may be rate-limited)
+#   https://www.semanticscholar.org/author/<id>
+#   https://export.arxiv.org/api/query?search_query=<query>&max_results=<n>
+
+# Longbiao Wang — speech emotion, audio understanding (via arXiv; Scholar ID: 1Z9_5ZgAAAAJ)
+LongbiaoWang  https://export.arxiv.org/api/query?search_query=au:Wang_Longbiao&max_results=200
+
+# Tianrui Wang — Scholar ID eGqo7CYAAAAJ; no arXiv/DBLP index found.
+# Re-enable when Scholar rate-limit clears:
+# TianruiWang  https://scholar.google.com/citations?user=eGqo7CYAAAAJ&hl=en

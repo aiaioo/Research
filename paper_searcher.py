@@ -19,7 +19,7 @@ import re
 import sys
 import time
 import xml.etree.ElementTree as ET
-from datetime import datetime
+from datetime import datetime, timezone
 from pathlib import Path
 from urllib.parse import urlparse
 
@@ -34,7 +34,9 @@ TODAY       = datetime.now().strftime("%Y%m%d")
 MONTH       = datetime.now().strftime("%Y%m")
 SEEN_FILE   = PAPERS_DIR / f"seen_papers_{MONTH}.tsv"
 OUT_FILE    = PAPERS_DIR / f"new_papers_{TODAY}.tsv"
-SEEN_FIELDS = ["date_seen", "source_name", "source_url", "paper_url", "title", "authors", "abstract", "keywords", "pub_date", "place", "category"]
+SEEN_FIELDS = ["date_seen", "source_name", "source_url", "paper_url", "title", "authors",
+               "abstract", "keywords", "pub_date", "place", "category",
+               "viewed", "read", "bookmarked", "labelled"]
 
 SESSION = requests.Session()
 SESSION.headers.update({
@@ -231,22 +233,28 @@ def arxiv_metadata(arxiv_id: str) -> dict:
         return {}
 
 def openreview_metadata(paper_id: str) -> dict:
+    def _val(x):
+        return x.get("value", "") if isinstance(x, dict) else (x or "")
+
+    note = None
+    for api_base in ("https://api2.openreview.net", "https://api.openreview.net"):
+        try:
+            r = SESSION.get(f"{api_base}/notes?id={paper_id}", timeout=10)
+            notes = r.json().get("notes", [])
+            if notes:
+                note = notes[0]
+                break
+        except Exception:
+            continue
+    if note is None:
+        return {}
+
     try:
-        r = SESSION.get(f"https://api.openreview.net/notes?id={paper_id}", timeout=10)
-        notes = r.json().get("notes", [])
-        if not notes:
-            return {}
-        note    = notes[0]
-        content = note.get("content", {})
-        title   = content.get("title", "")
-        if isinstance(title, dict):
-            title = title.get("value", "")
-        authors = content.get("authors", [])
-        if isinstance(authors, dict):
-            authors = authors.get("value", [])
-        abstract = content.get("abstract", "")
-        if isinstance(abstract, dict):
-            abstract = abstract.get("value", "")
+        content  = note.get("content", {})
+        title    = _val(content.get("title", ""))
+        authors  = _val(content.get("authors", []))
+        abstract = _val(content.get("abstract", ""))
+
         raw_kw = None
         for kw_field in ("keywords", "topics", "keyphrases"):
             raw_kw = content.get(kw_field)
@@ -255,15 +263,25 @@ def openreview_metadata(paper_id: str) -> dict:
         if isinstance(raw_kw, dict):
             raw_kw = raw_kw.get("value", [])
         keywords = ", ".join(raw_kw) if isinstance(raw_kw, list) else (str(raw_kw) if raw_kw else "")
+
         cdate = note.get("cdate") or note.get("tcdate")
         pub_date = ""
         if isinstance(cdate, (int, float)):
-            pub_date = datetime.utcfromtimestamp(cdate / 1000).strftime("%Y-%m-%d")
-        venue = content.get("venue", "") or content.get("venueid", "")
-        if isinstance(venue, dict):
-            venue = venue.get("value", "")
+            pub_date = datetime.fromtimestamp(cdate / 1000, tz=timezone.utc).strftime("%Y-%m-%d")
+
+        # Prefer venueid (structured) → parse to "CONFNAME YEAR"; fall back to venue (human-readable)
+        venueid = _val(content.get("venueid", ""))
+        venue = ""
+        if venueid:
+            venue = _parse_openreview_invitation(venueid) or venueid.split("/")[0]
         if not venue:
-            venue = _parse_openreview_invitation(note.get("invitation", ""))
+            venue = _val(content.get("venue", ""))
+        if not venue:
+            invitations = note.get("invitations", note.get("invitation", ""))
+            if isinstance(invitations, list):
+                invitations = invitations[0] if invitations else ""
+            venue = _parse_openreview_invitation(invitations)
+
         return {
             "title":    title,
             "authors":  ", ".join(authors) if isinstance(authors, list) else authors,
@@ -360,9 +378,10 @@ def enrich(p: dict) -> dict:
         p["pub_date"]   = p.get("pub_date") or meta.get("pub_date", "")
         if not p.get("place"):
             p["place"] = meta.get("journal_ref", "")
-    elif "openreview.net" in url and not (p.get("title") and p.get("authors")):
+    elif "openreview.net" in url and not (p.get("title") and p.get("abstract") and p.get("pub_date")):
         m2   = re.search(r"id=([\w\-]+)", url)
         meta = openreview_metadata(m2.group(1)) if m2 else {}
+        time.sleep(0.15)  # OpenReview API rate limit
         p["title"]    = p.get("title")    or meta.get("title", "")
         p["authors"]  = p.get("authors")  or meta.get("authors", "")
         p["abstract"] = p.get("abstract") or meta.get("abstract", "")
@@ -808,7 +827,7 @@ def scrape_openreview_venue(url: str) -> list:
                     cdate   = note.get("cdate") or note.get("tcdate")
                     pub_date = ""
                     if isinstance(cdate, (int, float)):
-                        pub_date = datetime.utcfromtimestamp(cdate / 1000).strftime("%Y-%m-%d")
+                        pub_date = datetime.fromtimestamp(cdate / 1000, tz=timezone.utc).strftime("%Y-%m-%d")
                     if note_id:
                         out.append({
                             "paper_url": f"https://openreview.net/forum?id={note_id}",
@@ -831,20 +850,84 @@ def scrape_openreview_venue(url: str) -> list:
     return out
 
 
+_PMLR_CONF_ABBREVS = {
+    "International Conference on Machine Learning":                         "ICML",
+    "International Conference on Artificial Intelligence and Statistics":   "AISTATS",
+    "Conference on Uncertainty in Artificial Intelligence":                 "UAI",
+    "Conference on Learning Theory":                                        "COLT",
+    "Asian Conference on Machine Learning":                                 "ACML",
+    "Robot Learning":                                                       "CoRL",
+    "Medical Imaging with Deep Learning":                                   "MIDL",
+    "Symposium on Advances in Approximate Bayesian Inference":              "AABI",
+    "Conference on Causal Learning and Reasoning":                          "CLeaR",
+}
+
+
+def _pmlr_rss(vol: str) -> tuple[dict, str]:
+    """
+    Fetch RSS feed for a PMLR volume.
+    Returns ({paper_url: {title, abstract, pub_date}}, venue_string).
+    venue_string is e.g. "ICML 2024" or "PMLR v235" as fallback.
+    """
+    from email.utils import parsedate
+    rss_url = f"https://proceedings.mlr.press/v{vol}/assets/rss/feed.xml"
+    try:
+        r    = SESSION.get(rss_url, timeout=15)
+        root = ET.fromstring(r.text)
+    except Exception:
+        return {}, f"PMLR v{vol}"
+
+    # Extract venue name from channel description first line
+    channel   = root.find("channel")
+    chan_desc  = (channel.findtext("description") or "") if channel else ""
+    first_line = chan_desc.strip().split("\n")[0].strip()
+    # Strip "Proceedings of (the Nth) " prefix
+    conf_long  = re.sub(r"^Proceedings of(?: the \d+(?:st|nd|rd|th)?)? ", "", first_line).strip()
+    conf_short = _PMLR_CONF_ABBREVS.get(conf_long, "")
+
+    url_to_meta: dict = {}
+    for item in root.findall(".//item"):
+        link = (item.findtext("link") or "").strip()
+        if not link:
+            continue
+        pdate_raw = item.findtext("pubDate") or ""
+        pub_date  = ""
+        if pdate_raw:
+            dt = parsedate(pdate_raw)
+            if dt:
+                pub_date = f"{dt[0]:04d}-{dt[1]:02d}-{dt[2]:02d}"
+        url_to_meta[link] = {
+            "title":    (item.findtext("title") or "").strip(),
+            "abstract": (item.findtext("description") or "").strip(),
+            "pub_date": pub_date,
+        }
+
+    year = ""
+    if url_to_meta:
+        year = next(iter(url_to_meta.values()))["pub_date"][:4]
+    venue = f"{conf_short} {year}".strip() if conf_short and year else (
+            f"{conf_long} {year}".strip() if conf_long and year else f"PMLR v{vol}")
+
+    return url_to_meta, venue
+
+
 def scrape_pmlr_volume(url: str) -> list:
     """
-    PMLR volume page (proceedings.mlr.press/vNNN/) — parses div.paper elements
-    which contain the title, authors, and abs link directly in the listing HTML.
+    PMLR volume page (proceedings.mlr.press/vNNN/) — scrapes titles+authors from HTML,
+    then augments with abstracts and pub_dates from the volume RSS feed.
     """
     vol_m = re.search(r"/v(\d+)/", url)
-    place = f"PMLR v{vol_m.group(1)}" if vol_m else "PMLR"
+    vol   = vol_m.group(1) if vol_m else ""
+
+    # Fetch RSS for abstracts and venue name (one HTTP call for the whole volume)
+    rss_meta, place = _pmlr_rss(vol) if vol else ({}, "PMLR")
+
     try:
         r    = SESSION.get(url, timeout=20)
         soup = BeautifulSoup(r.text, "html.parser")
         out  = []
-        seen = set()
+        seen: set = set()
         for div in soup.find_all("div", class_="paper"):
-            # The "abs" link holds the canonical paper page URL (may be full or relative)
             abs_a = div.find("a", string=re.compile(r"\babs\b", re.I))
             if not abs_a:
                 continue
@@ -859,8 +942,15 @@ def scrape_pmlr_volume(url: str) -> list:
             title      = title_el.get_text(strip=True) if title_el else abs_a.get_text(strip=True)
             authors_el = div.find(class_="authors") or div.find("span", class_="authors")
             authors    = authors_el.get_text(strip=True) if authors_el else ""
-            out.append({"paper_url": paper_url, "title": title,
-                        "authors": authors, "abstract": "", "place": place})
+            rss        = rss_meta.get(paper_url, {})
+            out.append({
+                "paper_url": paper_url,
+                "title":     rss.get("title") or title,
+                "authors":   authors,
+                "abstract":  rss.get("abstract", ""),
+                "pub_date":  rss.get("pub_date", ""),
+                "place":     place,
+            })
         return out
     except Exception as e:
         print(f"    [!] PMLR: {e}", file=sys.stderr)
@@ -1536,6 +1626,251 @@ def parse_sources(md_path: Path) -> list:
 
     return sources
 
+# ── Backfill ───────────────────────────────────────────────────────────────────
+def backfill_metadata(paths: list) -> None:
+    """
+    Re-enrich any row missing title, abstract, or pub_date.
+    Also migrates old TSV files that lack pub_date/place columns.
+    Only calls the arXiv/OpenReview API for papers with those URLs.
+    """
+    for path in paths:
+        if not path.exists():
+            continue
+        with path.open(newline="", encoding="utf-8") as f:
+            reader     = csv.DictReader(f, delimiter="\t")
+            fieldnames = list(reader.fieldnames or [])
+            rows       = list(reader)
+
+        # Migrate old TSVs to the current SEEN_FIELDS schema
+        changed_schema = False
+        for col in SEEN_FIELDS:
+            if col not in fieldnames:
+                fieldnames.append(col)
+                for row in rows:
+                    row.setdefault(col, "")
+                changed_schema = True
+        if changed_schema:
+            print(f"  {path.name}: migrated schema ({', '.join(c for c in SEEN_FIELDS if c not in (fieldnames or []))})", flush=True)
+
+        SCRAPEABLE = (
+            "proceedings.mlr.press", "ojs.aaai.org",
+            "ijcai.org/proceedings", "ecva.net/papers",
+            "aclanthology.org",
+        )
+
+        def needs_backfill(row: dict) -> bool:
+            url = row.get("paper_url", "")
+            has_source = bool(
+                ARXIV_RE.search(url)
+                or OPENREVIEW_RE.search(url)
+                or any(h in url for h in SCRAPEABLE)
+            )
+            missing = (
+                not row.get("title", "").strip()
+                or not row.get("abstract", "").strip()
+                or not row.get("pub_date", "").strip()
+            )
+            return has_source and missing
+
+        candidates = [i for i, row in enumerate(rows) if needs_backfill(row)]
+        if not candidates and not changed_schema:
+            print(f"  {path.name}: nothing to backfill", flush=True)
+            continue
+        if not candidates:
+            # Schema was migrated but no API calls needed — just rewrite
+            with path.open("w", newline="", encoding="utf-8") as f:
+                writer = csv.DictWriter(f, fieldnames=SEEN_FIELDS, delimiter="\t",
+                                        restval="", extrasaction="ignore")
+                writer.writeheader()
+                writer.writerows(rows)
+            continue
+
+        print(f"  {path.name}: backfilling {len(candidates)} rows …", flush=True)
+        fixed = 0
+        for i in candidates:
+            row = rows[i]
+            p   = {
+                "paper_url":  row.get("paper_url", ""),
+                "title":      row.get("title", ""),
+                "authors":    row.get("authors", ""),
+                "abstract":   row.get("abstract", ""),
+                "keywords":   row.get("keywords", ""),
+                "pub_date":   row.get("pub_date", ""),
+                "place":      row.get("place", ""),
+            }
+            p = enrich(p)
+            if p.get("title") or p.get("abstract") or p.get("pub_date"):
+                rows[i]["title"]    = p.get("title",    "") or row.get("title",    "")
+                rows[i]["authors"]  = p.get("authors",  "") or row.get("authors",  "")
+                rows[i]["abstract"] = p.get("abstract", "") or row.get("abstract", "")
+                rows[i]["keywords"] = p.get("keywords", "") or row.get("keywords", "")
+                rows[i]["pub_date"] = p.get("pub_date", "") or row.get("pub_date", "")
+                rows[i]["place"]    = p.get("place",    "") or row.get("place",    "")
+                fixed += 1
+
+        with path.open("w", newline="", encoding="utf-8") as f:
+            writer = csv.DictWriter(f, fieldnames=SEEN_FIELDS, delimiter="\t",
+                                    restval="", extrasaction="ignore")
+            writer.writeheader()
+            writer.writerows(rows)
+        print(f"    → enriched {fixed}/{len(candidates)} rows", flush=True)
+
+    # Second pass: PMLR papers — batch-fetch one RSS per volume
+    print("\nPMLR RSS backfill …", flush=True)
+    _backfill_pmlr_rss(paths)
+
+
+def _backfill_pmlr_rss(paths: list) -> None:
+    """
+    For PMLR papers missing abstract/place in the given TSV files, fetch each volume's
+    RSS feed once and batch-update matching rows.  One HTTP request per volume.
+    """
+    PMLR_RE = re.compile(r"proceedings\.mlr\.press/v(\d+)/")
+
+    for path in paths:
+        if not path.exists():
+            continue
+        with path.open(newline="", encoding="utf-8") as f:
+            reader     = csv.DictReader(f, delimiter="\t")
+            fieldnames = list(reader.fieldnames or [])
+            rows       = list(reader)
+
+        # Group row indices by volume that need backfill
+        vol_to_indices: dict = {}
+        for i, row in enumerate(rows):
+            url = row.get("paper_url", "")
+            m   = PMLR_RE.search(url)
+            if not m:
+                continue
+            if row.get("abstract", "").strip() and row.get("place", "").strip():
+                continue  # already complete
+            vol_to_indices.setdefault(m.group(1), []).append(i)
+
+        if not vol_to_indices:
+            print(f"  {path.name}: no PMLR rows to backfill", flush=True)
+            continue
+
+        total_fixed = 0
+        for vol, indices in sorted(vol_to_indices.items()):
+            print(f"  {path.name}: v{vol} — fetching RSS for {len(indices)} papers …", flush=True)
+            rss_meta, venue = _pmlr_rss(vol)
+            if not rss_meta:
+                print(f"    [!] no RSS data for v{vol}", flush=True)
+                continue
+            fixed = 0
+            for i in indices:
+                url  = rows[i].get("paper_url", "")
+                meta = rss_meta.get(url, {})
+                if meta.get("abstract") and not rows[i].get("abstract", "").strip():
+                    rows[i]["abstract"] = meta["abstract"]
+                if meta.get("title") and not rows[i].get("title", "").strip():
+                    rows[i]["title"] = meta["title"]
+                if meta.get("pub_date") and not rows[i].get("pub_date", "").strip():
+                    rows[i]["pub_date"] = meta["pub_date"]
+                if not rows[i].get("place", "").strip():
+                    rows[i]["place"] = venue
+                fixed += 1
+            total_fixed += fixed
+            print(f"    → updated {fixed}/{len(indices)} rows  (venue: {venue})", flush=True)
+
+        with path.open("w", newline="", encoding="utf-8") as f:
+            writer = csv.DictWriter(f, fieldnames=SEEN_FIELDS, delimiter="\t",
+                                    restval="", extrasaction="ignore")
+            writer.writeheader()
+            writer.writerows(rows)
+        print(f"  {path.name}: PMLR done ({total_fixed} total rows updated)", flush=True)
+
+
+# ── Diagnostic helpers ─────────────────────────────────────────────────────────
+
+def diagnose_missing(paths: list) -> None:
+    """
+    Break down papers missing title/abstract by URL type, and report how many
+    the backfill would attempt vs. can't touch.
+    """
+    import re as _re
+    SCRAPEABLE = (
+        "proceedings.mlr.press", "ojs.aaai.org",
+        "ijcai.org/proceedings", "ecva.net/papers", "aclanthology.org",
+    )
+    buckets: dict = {
+        "arxiv":          {"total": 0, "no_title": 0, "no_abstract": 0},
+        "openreview":     {"total": 0, "no_title": 0, "no_abstract": 0},
+        "pmlr":           {"total": 0, "no_title": 0, "no_abstract": 0},
+        "aaai":           {"total": 0, "no_title": 0, "no_abstract": 0},
+        "acl":            {"total": 0, "no_title": 0, "no_abstract": 0},
+        "other_scrapeable":{"total": 0,"no_title": 0, "no_abstract": 0},
+        "no_api":         {"total": 0, "no_title": 0, "no_abstract": 0},
+    }
+    sample_no_api: list = []
+
+    for path in paths:
+        if not path.exists():
+            continue
+        with path.open(newline="", encoding="utf-8") as f:
+            for row in csv.DictReader(f, delimiter="\t"):
+                url  = row.get("paper_url", "")
+                has_t = bool(row.get("title", "").strip())
+                has_a = bool(row.get("abstract", "").strip())
+                if ARXIV_RE.search(url):
+                    b = "arxiv"
+                elif OPENREVIEW_RE.search(url):
+                    b = "openreview"
+                elif "proceedings.mlr.press" in url:
+                    b = "pmlr"
+                elif "ojs.aaai.org" in url:
+                    b = "aaai"
+                elif "aclanthology.org" in url:
+                    b = "acl"
+                elif any(h in url for h in SCRAPEABLE):
+                    b = "other_scrapeable"
+                else:
+                    b = "no_api"
+                    if not has_t and len(sample_no_api) < 5:
+                        sample_no_api.append(url)
+                buckets[b]["total"] += 1
+                if not has_t: buckets[b]["no_title"] += 1
+                if not has_a: buckets[b]["no_abstract"] += 1
+
+    print(f"\n{'Source':<20} {'total':>7} {'no title':>9} {'no abstract':>12}", flush=True)
+    print("-" * 52, flush=True)
+    for name, d in buckets.items():
+        if d["total"]:
+            print(f"  {name:<18} {d['total']:>7,} {d['no_title']:>9,} {d['no_abstract']:>12,}", flush=True)
+
+    if sample_no_api:
+        print(f"\nSample 'no_api' URLs (can't auto-enrich):", flush=True)
+        for u in sample_no_api:
+            print(f"  {u}", flush=True)
+
+
+def test_enrich_url(url: str) -> None:
+    """Fetch metadata for a single URL and print what enrich() returns."""
+    print(f"Testing enrich for: {url}\n", flush=True)
+    p = {"paper_url": url, "title": "", "authors": "", "abstract": "",
+         "keywords": "", "pub_date": "", "place": ""}
+    result = enrich(p)
+    for field in ("title", "authors", "abstract", "pub_date", "place", "keywords"):
+        val = result.get(field, "")
+        if val:
+            snippet = val[:120].replace("\n", " ")
+            print(f"  {field:<12}: {snippet}", flush=True)
+        else:
+            print(f"  {field:<12}: (empty)", flush=True)
+
+
+def test_pmlr_vol(vol: str) -> None:
+    """Fetch the RSS for one PMLR volume and show what metadata comes back."""
+    print(f"Fetching PMLR RSS for volume {vol} …", flush=True)
+    meta, venue = _pmlr_rss(vol)
+    print(f"  Venue : {venue}", flush=True)
+    print(f"  Papers: {len(meta)}", flush=True)
+    for url, d in list(meta.items())[:5]:
+        title = (d.get("title") or "")[:80]
+        print(f"  {url}", flush=True)
+        print(f"    title: {title}", flush=True)
+
+
 # ── Main ───────────────────────────────────────────────────────────────────────
 def main() -> None:
     parser = argparse.ArgumentParser(
@@ -1549,11 +1884,49 @@ def main() -> None:
         choices=["curated", "uncurated", "educational", "corporate", "conferences", "journals", "all"],
         help="Source groups to check: curated, uncurated, educational, corporate, conferences, journals, all",
     )
+    parser.add_argument(
+        "--backfill", action="store_true",
+        help="Re-enrich rows missing title/abstract in all seen/new TSV files, then exit",
+    )
+    parser.add_argument(
+        "--diagnose", action="store_true",
+        help="Report which URL types are missing titles/abstracts and whether backfill can help",
+    )
+    parser.add_argument(
+        "--test-enrich", metavar="URL",
+        help="Run enrich() on a single URL and print the result",
+    )
+    parser.add_argument(
+        "--test-pmlr", metavar="VOL",
+        help="Fetch PMLR RSS for a specific volume number and show sample results",
+    )
     args = parser.parse_args()
+
+    if args.diagnose:
+        paths = (sorted(PAPERS_DIR.glob("seen_papers_*.tsv"))
+                 + sorted(PAPERS_DIR.glob("new_papers_*.tsv")))
+        diagnose_missing(paths)
+        return
+
+    if args.test_enrich:
+        test_enrich_url(args.test_enrich)
+        return
+
+    if args.test_pmlr:
+        test_pmlr_vol(args.test_pmlr)
+        return
+
+    if args.backfill:
+        paths = (sorted(PAPERS_DIR.glob("seen_papers_*.tsv"))
+                 + sorted(PAPERS_DIR.glob("new_papers_*.tsv")))
+        print(f"Backfilling metadata across {len(paths)} file(s) …\n", flush=True)
+        backfill_metadata(paths)
+        return
 
     if not args.groups:
         parser.print_help()
         sys.exit(0)
+
 
     active = set(args.groups)
     check_all = "all" in active
@@ -1601,6 +1974,10 @@ def main() -> None:
                 "pub_date":    p.get("pub_date", ""),
                 "place":       p.get("place", ""),
                 "category":    "",
+                "viewed":      "",
+                "read":        "",
+                "bookmarked":  "",
+                "labelled":    "",
             })
 
         if fresh:
@@ -1615,11 +1992,8 @@ def main() -> None:
 
     if new_rows:
         with OUT_FILE.open("w", newline="", encoding="utf-8") as f:
-            w = csv.DictWriter(
-                f,
-                fieldnames=["source_name", "source_url", "paper_url", "title", "authors", "abstract", "keywords", "pub_date", "place"],
-                delimiter="\t",
-            )
+            w = csv.DictWriter(f, fieldnames=SEEN_FIELDS, delimiter="\t",
+                               restval="", extrasaction="ignore")
             w.writeheader()
             w.writerows(new_rows)
         print(f"\n{len(new_rows)} new papers written to {OUT_FILE.relative_to(ROOT)}")

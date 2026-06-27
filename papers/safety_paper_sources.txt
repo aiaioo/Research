@@ -1,0 +1,12 @@
+# AI safety / mechanistic interpretability paper sources.
+# Format: <name>  <url>
+# Supported URL types:
+#   https://github.com/<owner>/<repo>
+#   https://scholar.google.com/citations?user=<id>
+#   https://www.semanticscholar.org/author/<id>
+
+# Neel Nanda — mechanistic interpretability, S2 author page (reliable, no captchas)
+Neel-Nanda  https://www.semanticscholar.org/author/2051128902
+
+# Uncomment to also scrape Google Scholar profile (more papers, but rate-limited):
+# Neel-Nanda-Scholar  https://scholar.google.com/citations?user=GLnX3MkAAAAJ&hl=en

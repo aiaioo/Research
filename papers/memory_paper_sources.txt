@@ -1,0 +1,6 @@
+# GitHub repositories containing memory-related paper lists.
+# Format: <name>  <github-url>
+# Lines starting with # are ignored.
+
+NeuralMemoryPapers       https://github.com/Alexzhuan/NeuralMemoryPapers
+Agent-Memory-Paper-List  https://github.com/Shichun-Liu/Agent-Memory-Paper-List

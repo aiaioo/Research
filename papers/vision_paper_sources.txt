@@ -1,0 +1,6 @@
+# GitHub repositories containing memory-related paper lists.
+# Format: <name>  <github-url>
+# Lines starting with # are ignored.
+
+FanhengKong	https://github.com/friedrichor/Awesome-Multimodal-Papers
+AppliedAIResearchLab	https://github.com/Applied-AI-Research-Lab/Vision-Language-Action-Models-Concepts-Progress-Applications-and-Challenges/blob/main/Paper_List/paper_list_2025.md

@@ -1,0 +1,11 @@
+# Speech and voice model paper sources.
+# Format: <name>  <url>
+# Supported URL types:
+#   https://github.com/<owner>/<repo>
+#   https://scholar.google.com/citations?user=<id>    (may be rate-limited)
+#   https://www.semanticscholar.org/author/<id>
+#   https://export.arxiv.org/api/query?search_query=<query>&max_results=<n>
+
+IlyaSutskever	https://github.com/AnupBhat30/ilya-sutskever-ai-reading-list
+HallerPatrick   https://github.com/hallerpatrick/awesome-la-papers
+Exceptional https://github.com/terryum/awesome-deep-learning-papers

@@ -6,8 +6,7 @@ Reads papers/seen_papers_*.tsv and papers/new_papers_*.tsv.
 For every row where 'category' is empty and both 'title' and 'abstract'
 are non-empty, assigns one of:
 
-  memory · mechinterp · architecture · vision · voice ·
-  theory · training · performance · LLM
+  memory · safety · models · vision · voice · training
 
 Classification is keyword-scoring over title (3×) and abstract (1×).
 arXiv category codes in the 'keywords' field provide bonus signals.
@@ -33,8 +32,8 @@ PAPERS_DIR = ROOT / "papers"
 
 # Priority order: ties broken by earliest position in this list.
 CATEGORIES = [
-    "mechinterp", "voice", "vision", "memory",
-    "theory", "architecture", "training", "performance", "LLM",
+    "safety", "voice", "vision", "memory",
+    "models", "training",
 ]
 
 # ── Keyword rules ──────────────────────────────────────────────────────────────
@@ -44,7 +43,7 @@ CATEGORIES = [
 # Title match = 3 × score; abstract match = 1 × score.
 RULES: dict[str, list[tuple[list[str], int]]] = {
 
-    "mechinterp": [
+    "safety": [
         (["mechanistic interpretability", "mechanistic analysis",
           "induction head", "superposition hypothesis",
           "polysemanticity", "causal tracing", "activation patching",
@@ -53,7 +52,12 @@ RULES: dict[str, list[tuple[list[str], int]]] = {
           "sparse autoencoder", "sparse dictionary learning",
           "feature visualization", "causal intervention",
           "information flow analysis", "probing classifier",
-          "grokking", "sycophancy analysis",
+          "grokking", "sycophancy analysis", "safeguards", "safety",
+          "robustness", "robust", "adversarial", "attack", "safe",
+          "alignment", "prompt injection", "exfiltration", "vulnerable",
+          "vulnerability", "control safety", "control evaluation",
+          "misalignment", "reward hacking", "circuits",
+          "sycophancy", "jailbreak", "privileged instructions",
           "knowledge circuit", "mech interp"], 4),
         (["interpretability", "probing", "mechanistic", "induction circuit",
           "attention head analysis", "feature geometry",
@@ -105,8 +109,7 @@ RULES: dict[str, list[tuple[list[str], int]]] = {
     ],
 
     "memory": [
-        (["retrieval-augmented generation", "retrieval augmented generation",
-          "rag system", "rag model", "rag pipeline",
+        (["longmemeval", "memory", "memories",
           "memory-augmented", "memory augmented network",
           "external memory", "episodic memory",
           "memory bank", "memory module", "memory network",
@@ -120,37 +123,16 @@ RULES: dict[str, list[tuple[list[str], int]]] = {
           "memory-enhanced", "recurrent memory transformer",
           "grounded retrieval", "external knowledge retrieval",
           "memory management for", "persistent memory"], 4),
-        (["retrieval augmented", "augmented retrieval",
-          "external knowledge", "memory slot", "memory cell",
+        (["memory", "memories", "memory slot", "memory cell",
           "knowledge store", "memory mechanism",
-          "episodic buffer", "memory replay",
+          "episodic buffer", "memory replay", "longmemeval",
           "long-context memory"], 2),
     ],
 
-    "theory": [
-        (["pac learning", "vc dimension", "rademacher complexity",
-          "generalization bound", "excess risk bound", "sample complexity",
-          "convergence proof", "convergence rate analysis",
-          "neural tangent kernel", "mean field theory",
-          "information bottleneck", "statistical learning theory",
-          "overparameterization", "double descent",
-          "benign overfitting", "implicit regularization", "implicit bias",
-          "loss landscape", "saddle point", "gradient flow analysis",
-          "regret bound", "online learning theory",
-          "learnability", "expressivity of",
-          "approximation theory", "universal approximation",
-          "computational complexity of learning",
-          "we prove that", "we establish that",
-          "tight bound", "minimax optimal"], 4),
-        (["convergence analysis", "convergence rate", "convergence proof",
-          "regret bound", "regret analysis",
-          "learnability", "lower bound on", "upper bound on",
-          "theoretical analysis", "approximation bound"], 2),
-    ],
-
-    "architecture": [
+    "models": [
+        # Architecture
         (["state space model", "selective state space", "structured state space",
-          "mamba model", "mamba architecture", "mamba2", "mamba 2",
+          "mamba", "mamba architecture", "mamba2", "mamba 2",
           "flash attention", "ring attention",
           "linear attention", "local attention", "global-local attention",
           "mixture of experts", "mixture-of-experts", "moe layer",
@@ -170,11 +152,32 @@ RULES: dict[str, list[tuple[list[str], int]]] = {
           "s4 model", "ssm layer", "hippo matrix",
           "positional encoding design", "relative positional",
           "attention mechanism design", "transformer design",
-          "architecture search"], 4),
+          "architecture search",
+          # Theory
+          "pac learning", "vc dimension", "rademacher complexity",
+          "generalization bound", "excess risk bound", "sample complexity",
+          "convergence proof", "convergence rate analysis",
+          "neural tangent kernel", "mean field theory",
+          "information bottleneck", "statistical learning theory",
+          "overparameterization", "double descent",
+          "benign overfitting", "implicit regularization", "implicit bias",
+          "loss landscape", "saddle point", "gradient flow analysis",
+          "regret bound", "online learning theory",
+          "learnability", "expressivity of",
+          "approximation theory", "universal approximation",
+          "computational complexity of learning",
+          "we prove that", "we establish that", "why", "neurons",
+          "understanding", "weights", "bounds", "proving", "proof",
+          "exploring", "is all you need", "theorem", "are equivalent",
+          "tight bound", "minimax optimal"], 4),
         (["transformer", "attention mechanism", "self-attention",
           "architecture", "ssm", "residual", "feed-forward",
           "positional encoding", "normalization", "tokenizer",
-          "gating mechanism", "recurrent layer", "moe"], 2),
+          "gating mechanism", "recurrent layer", "moe",
+          "convergence analysis", "convergence rate",
+          "regret bound", "regret analysis",
+          "learnability", "lower bound on", "upper bound on",
+          "theoretical analysis", "approximation bound"], 2),
     ],
 
     "training": [
@@ -210,85 +213,6 @@ RULES: dict[str, list[tuple[list[str], int]]] = {
           "reinforcement learning"], 2),
     ],
 
-    "performance": [
-        (["quantization", "post-training quantization",
-          "quantization-aware training", "int8 ", "int4 ",
-          " fp8 ", "4-bit quantiz", "8-bit quantiz",
-          "knowledge distillation", "model compression",
-          "network pruning", "weight pruning",
-          "structured pruning", "unstructured pruning",
-          "speculative decoding", "speculative sampling",
-          "draft model", "early exit strategy",
-          "adaptive computation", "layer skipping",
-          "token dropping", "weight sharing",
-          "model acceleration", "inference optimization",
-          "efficient inference", "fast inference",
-          "throughput optimization", "latency reduction",
-          "flops reduction", "parameter reduction",
-          "hardware-aware training", "hardware efficient",
-          "sparse model", "sparse inference",
-          "kv cache compression", "kv cache optimization",
-          "paged attention", "flash decoding",
-          "tensor parallelism", "pipeline parallelism",
-          "model parallelism", "memory bandwidth optimization",
-          "memory-efficient training",
-          "compute-efficient", "energy efficient"], 4),
-        (["compression", "efficient model", "lightweight model",
-          "compact model", "faster inference", "fewer parameters",
-          "smaller model", "prune", "quantize",
-          "distillation", "efficient attention", "sparsity"], 2),
-    ],
-
-    "LLM": [
-        (["large language model", "autoregressive language model",
-          "in-context learning", "few-shot prompting", "zero-shot prompting",
-          "chain-of-thought", "chain of thought", "cot prompting",
-          "mathematical reasoning", "arithmetic reasoning",
-          "commonsense reasoning", "logical reasoning",
-          "hallucination in llm", "model hallucination",
-          "emergent abilit", "emergent capabilities",
-          "scaling law", "chinchilla scaling",
-          "llama model", "llama 2", "llama 3", "llama-", "mistral model",
-          "gemini model", "gpt-4", "gpt-3", "gpt4", "gpt3", "chatgpt",
-          "claude model", "palm model", "palm2",
-          "bloom model", "falcon model", "qwen model", "deepseek model",
-          "phi model", "phi-", "gemma model", "codellama",
-          "code generation model", "code synthesis",
-          "program synthesis", "program generation",
-          "language generation", "natural language generation",
-          "instruction following", "instruction-following",
-          "question answering model", "reading comprehension model",
-          "language model pretraining", "causal language model",
-          "next-token prediction", "pretraining language model",
-          "llm training", "llm fine-tuning",
-          "base language model", "foundation language model",
-          "language model benchmark", "language understanding benchmark",
-          # Agentic / tool use
-          "llm agent", "language model agent", "agentic ai",
-          "autonomous agent", "computer-use agent", "computer use agent",
-          "web agent", "coding agent", "tool-use agent",
-          "tool use in llm", "tool calling", "function calling",
-          "multi-agent system", "multi-agent framework",
-          "agent framework", "agent benchmark", "agent evaluation",
-          "agentic framework", "agentic system",
-          "skill-mediated", "task-solving agent",
-          # Reasoning / prompting
-          "step-by-step reasoning", "scratchpad", "self-consistency",
-          "tree of thought", "least-to-most", "decomposition prompting",
-          "process reward model", "outcome reward model",
-          # Alignment / safety
-          "red-teaming", "red teaming", "jailbreak",
-          "safety alignment", "value alignment", "harmful content",
-          "bias in language", "fairness in llm",
-          # Multilinguality
-          "multilingual model", "cross-lingual",
-          "machine translation model"], 4),
-        (["language model", "llm", "gpt", "generation",
-          "reasoning", "pretraining", "instruction",
-          "foundation model", "base model", "prompt",
-          "agent", "agentic", "tool use", "benchmark",
-          "evaluation of", "dialog", "dialogue system"], 2),
-    ],
 }
 
 # arXiv category codes → bonus points per CATEGORIES entry
@@ -297,8 +221,8 @@ ARXIV_BONUS: dict[str, dict[str, int]] = {
     "eess.iv": {"vision": 4},
     "eess.as": {"voice": 6},
     "eess.sp": {"voice": 4},
-    "cs.cl":  {"LLM": 4},
-    "cs.ne":  {"architecture": 3},
+    "cs.cl":  {},
+    "cs.ne":  {"models": 3},
     "stat.ml": {},  # too broad for theory bonus; most ML papers use this category
     "cs.lg":  {},   # too broad to assign bonus
     "cs.ai":  {},
@@ -331,13 +255,13 @@ def _phrase_score(text: str, rules: list[tuple[list[str], int]]) -> dict[str, in
     return scores
 
 
-MIN_SCORE = 2  # minimum total score to assign a specific category; else "LLM"
+MIN_SCORE = 2  # minimum total score to assign a specific category; else left unset
 
 def classify(title: str, abstract: str, keywords: str = "") -> str:
     """
     Return the best-matching category for a paper.
     Title carries 3× the weight of abstract text.
-    Falls back to 'LLM' when no category reaches MIN_SCORE.
+    Returns '' when no category reaches MIN_SCORE (paper appears under 'others').
     """
     t_scores = _phrase_score(title, RULES)
     a_scores = _phrase_score(abstract, RULES)
@@ -352,9 +276,15 @@ def classify(title: str, abstract: str, keywords: str = "") -> str:
         for cat, pts in bonus_map.items():
             totals[cat] += pts
 
+    # memory and safety are easily drowned out by accumulated generic architecture
+    # signals. When their specific phrases appear (≥4 means at least one concrete match),
+    # multiply their score by 5 so they dominate all other categories.
+    for cat in ("memory", "safety"):
+        totals[cat] *= 5
+
     best_score = max(totals.values())
     if best_score < MIN_SCORE:
-        return "LLM"   # all AI/ML papers belong here when nothing more specific matches
+        return ""
 
     # Highest score, tie-broken by CATEGORIES priority order
     return max(CATEGORIES, key=lambda c: (totals[c], -CATEGORIES.index(c)))
@@ -362,10 +292,10 @@ def classify(title: str, abstract: str, keywords: str = "") -> str:
 
 # ── File processing ────────────────────────────────────────────────────────────
 
-def process_file(path: Path, dry_run: bool, reclassify: bool) -> tuple[int, int]:
+def process_file(path: Path, dry_run: bool, reclassify: bool) -> tuple[int, int, Counter]:
     """
     Classify uncategorized papers in one TSV file.
-    Returns (papers_found, papers_classified).
+    Returns (papers_found, papers_classified, category_counter).
     Adds a 'category' column if the file doesn't have one.
     """
     with path.open(newline="", encoding="utf-8") as f:
@@ -374,34 +304,32 @@ def process_file(path: Path, dry_run: bool, reclassify: bool) -> tuple[int, int]
         rows = list(reader)
 
     if not rows:
-        return 0, 0
+        return 0, 0, Counter()
 
-    # Add 'category' column if missing
     if "category" not in fieldnames:
         fieldnames.append("category")
         for row in rows:
             row.setdefault("category", "")
 
-    # Determine which rows need classification
     if reclassify:
         candidates = [
             (i, row) for i, row in enumerate(rows)
-            if row.get("title") and row.get("abstract")
+            if row.get("title")
+            and row.get("labelled") != "true"
         ]
     else:
         candidates = [
             (i, row) for i, row in enumerate(rows)
             if not row.get("category")
             and row.get("title")
-            and row.get("abstract")
         ]
 
     if not candidates:
-        return 0, 0
+        return 0, 0, Counter()
 
     print(f"  {path.name}: {len(candidates)} paper(s) to classify")
 
-    classified = 0
+    cat_counts: Counter = Counter()
     for i, row in candidates:
         cat = classify(
             row.get("title", ""),
@@ -409,7 +337,7 @@ def process_file(path: Path, dry_run: bool, reclassify: bool) -> tuple[int, int]
             row.get("keywords", ""),
         )
         rows[i]["category"] = cat
-        classified += 1
+        cat_counts[cat] += 1
         if dry_run:
             title = row.get("title", "")[:70]
             print(f"    [{cat:<12}] {title}")
@@ -422,7 +350,7 @@ def process_file(path: Path, dry_run: bool, reclassify: bool) -> tuple[int, int]
             writer.writeheader()
             writer.writerows(rows)
 
-    return len(candidates), classified
+    return len(candidates), sum(cat_counts.values()), cat_counts
 
 
 def show_stats(paths: list[Path]) -> None:
@@ -481,19 +409,27 @@ def main() -> None:
         sys.exit(1)
 
     total_found = total_classified = 0
+    total_cats: Counter = Counter()
     for path in paths:
         if not path.exists():
             print(f"  [!] {path}: not found", file=sys.stderr)
             continue
-        found, classified = process_file(path, args.dry_run, args.reclassify)
+        found, classified, cats = process_file(path, args.dry_run, args.reclassify)
         total_found      += found
         total_classified += classified
+        total_cats       += cats
 
     if total_found == 0:
         print("Nothing to classify — all eligible papers already have a category.")
     else:
         action = "Would classify" if args.dry_run else "Classified"
-        print(f"\n{action} {total_classified}/{total_found} papers.")
+        print(f"\n{action} {total_classified}/{total_found} papers.\n")
+        width = max(len(c) for c in total_cats) if total_cats else 0
+        for cat in CATEGORIES:
+            n = total_cats.get(cat, 0)
+            if n:
+                bar = "▪" * (n * 24 // max(total_cats.values()))
+                print(f"  {cat:<{width}}  {n:5,}  {bar}")
 
 
 if __name__ == "__main__":
