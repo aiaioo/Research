@@ -10,6 +10,7 @@ Usage:
 import argparse
 import csv
 from collections import defaultdict
+from datetime import datetime
 from pathlib import Path
 
 from flask import Flask, jsonify, redirect, render_template_string, request, url_for
@@ -25,6 +26,26 @@ USER_FIELDS = {"viewed", "read", "bookmarked", "labelled", "category"}
 
 app    = Flask(__name__)
 _cache: list | None = None
+
+try:
+    from paper_searcher import (
+        enrich, ARXIV_RE, OPENREVIEW_RE,
+        SEEN_FIELDS, append_seen,
+    )
+    _LOOKUP_AVAILABLE = True
+except ImportError:
+    _LOOKUP_AVAILABLE = False
+    SEEN_FIELDS = [
+        "date_seen", "source_name", "source_url", "paper_url", "title",
+        "authors", "abstract", "keywords", "pub_date", "place",
+        "viewed", "read", "bookmarked", "labelled", "category",
+    ]
+
+try:
+    from paper_categorizer import classify as _classify_fn
+    _CLASSIFY_AVAILABLE = True
+except ImportError:
+    _CLASSIFY_AVAILABLE = False
 
 
 # ── Data loading ───────────────────────────────────────────────────────────────
@@ -119,6 +140,97 @@ def update_paper_field(paper_url: str, updates: dict) -> bool:
     return False
 
 
+def delete_paper_from_tsvs(paper_url: str) -> bool:
+    removed = False
+    for path in (sorted(PAPERS_DIR.glob("seen_papers_*.tsv"))
+                 + sorted(PAPERS_DIR.glob("new_papers_*.tsv"))):
+        if not path.exists():
+            continue
+        with path.open(newline="", encoding="utf-8") as f:
+            reader     = csv.DictReader(f, delimiter="\t")
+            fieldnames = list(reader.fieldnames or [])
+            rows       = list(reader)
+        new_rows = [r for r in rows if r.get("paper_url", "").strip() != paper_url]
+        if len(new_rows) < len(rows):
+            with path.open("w", newline="", encoding="utf-8") as f:
+                writer = csv.DictWriter(f, fieldnames=fieldnames, delimiter="\t",
+                                        restval="", extrasaction="ignore")
+                writer.writeheader()
+                writer.writerows(new_rows)
+            removed = True
+    if removed and _cache is not None:
+        _cache[:] = [p for p in _cache if p.get("paper_url", "").strip() != paper_url]
+    return removed
+
+
+_ARXIV_HTML_RE = __import__("re").compile(
+    r"arxiv\.org/(?:abs|pdf|html)/(\d{4}\.\d{4,5})(?:v\d+)?"
+)
+
+
+def lookup_or_fetch_paper(raw_url: str) -> tuple | None:
+    """Find paper in cache by URL, or fetch+classify+add it. Returns (paper_dict, was_added) or None."""
+    if not _LOOKUP_AVAILABLE:
+        return None
+    url = raw_url.strip()
+    if not url.startswith("http"):
+        url = "https://" + url
+    paper_url = url
+    # Normalise any arxiv variant (abs / pdf / html) → canonical abs URL
+    m = _ARXIV_HTML_RE.search(url)
+    if m:
+        paper_url = f"https://arxiv.org/abs/{m.group(1)}"
+    else:
+        m2 = OPENREVIEW_RE.search(url)
+        if m2:
+            paper_url = f"https://openreview.net/forum?id={m2.group(1)}"
+    papers = load_papers()
+    for p in papers:
+        if p.get("paper_url", "").strip() == paper_url:
+            return (p, False)
+    p_data: dict = {
+        "paper_url": paper_url, "title": "", "authors": "",
+        "abstract": "", "keywords": "", "pub_date": "", "place": "",
+        "categories": set(),
+    }
+    try:
+        p_data = enrich(p_data)
+    except Exception:
+        return None
+    if not p_data.get("title") and not p_data.get("abstract"):
+        return None
+    cat = ""
+    if _CLASSIFY_AVAILABLE:
+        cat = _classify_fn(
+            p_data.get("title", ""),
+            p_data.get("abstract", ""),
+            p_data.get("keywords", ""),
+        )
+    today = datetime.now().strftime("%Y%m%d")
+    row = {f: "" for f in SEEN_FIELDS}
+    row.update({
+        "date_seen":   today,
+        "source_name": "Manual lookup",
+        "source_url":  "",
+        "paper_url":   paper_url,
+        "title":       p_data.get("title", ""),
+        "authors":     p_data.get("authors", ""),
+        "abstract":    p_data.get("abstract", ""),
+        "keywords":    p_data.get("keywords", ""),
+        "pub_date":    p_data.get("pub_date", ""),
+        "place":       p_data.get("place", ""),
+        "category":    cat,
+    })
+    append_seen([row])
+    global _cache
+    _cache = None
+    papers = load_papers()
+    for p in papers:
+        if p.get("paper_url", "").strip() == paper_url:
+            return (p, True)
+    return (row, True)
+
+
 # ── HTML template ──────────────────────────────────────────────────────────────
 
 TEMPLATE = """\
@@ -132,10 +244,6 @@ TEMPLATE = """\
   <link href="https://fonts.googleapis.com/css2?family=Inter:wght@400;500;600;700&display=swap"
         rel="stylesheet">
   <style>
-    /* ── Theme tokens ─────────────────────────────────────────────────────────
-       Light: clean, cool-tinted whites — airy, low-noise
-       Dark:  deep blue-black (not gray) — premium feel, intentional depth
-    */
     :root {
       --bg:         #f5f7fc;
       --surface:    #ffffff;
@@ -149,6 +257,7 @@ TEMPLATE = """\
       --shadow:     0 1px 2px rgba(0,0,0,.04), 0 2px 5px rgba(0,0,0,.06);
       --accent-v:   #1d52d6;
       --accent-b:   #b45309;
+      --danger:     #c0392b;
     }
     html.dark {
       --bg:         #080c14;
@@ -163,28 +272,25 @@ TEMPLATE = """\
       --shadow:     none;
       --accent-v:   #7bb3ff;
       --accent-b:   #f59e0b;
+      --danger:     #e74c3c;
     }
 
-    /* ── Reset & base ─────────────────────────────────────────────────────── */
     *, *::before, *::after { box-sizing: border-box; margin: 0; padding: 0; }
 
     body {
       font-family: 'Inter', system-ui, sans-serif;
-      font-size: .78rem;              /* sz-text — base size for all body text */
+      font-size: .78rem;
       background: var(--bg);
       color: var(--text);
       line-height: 1.55;
       transition: background .2s, color .2s;
     }
 
-    /* ── Three font sizes (all text lives in one of these three) ──────────── */
     .sz-h1  { font-size: 1.15rem; font-weight: 700; letter-spacing: -.01em; }
     .sz-sub { font-size: .92rem;  font-weight: 600; line-height: 1.38; }
-    /* sz-text = base .78rem applied to body                                   */
 
     a { color: inherit; }
 
-    /* ── Layout ───────────────────────────────────────────────────────────── */
     .wrap { max-width: 1100px; margin: 0 auto; padding: 1.25rem 1.5rem; }
 
     /* ── Top bar ──────────────────────────────────────────────────────────── */
@@ -192,21 +298,90 @@ TEMPLATE = """\
       display: flex; align-items: center; gap: .7rem;
       padding-bottom: .9rem; margin-bottom: 1rem;
       border-bottom: 1px solid var(--border);
+      flex-wrap: wrap;
     }
-    .top-bar .spacer { flex: 1; }
-    .top-bar .total  { color: var(--text-muted); }
+    .top-bar .spacer { flex: 1; min-width: .5rem; }
+    .top-bar .total  { color: var(--text-muted); white-space: nowrap; }
 
     .theme-btn {
       font-family: inherit; font-size: .78rem;
       background: var(--surface); color: var(--text-sub);
       border: 1px solid var(--border); border-radius: 5px;
       padding: .25rem .65rem; cursor: pointer; line-height: 1.5;
-      transition: border-color .15s, color .15s;
+      transition: border-color .15s, color .15s; white-space: nowrap;
     }
     .theme-btn:hover { color: var(--text); border-color: var(--text-muted); }
 
-    .reload-link { color: var(--text-sub); text-decoration: none; }
+    .reload-link { color: var(--text-sub); text-decoration: none; white-space: nowrap; }
     .reload-link:hover { color: var(--text); }
+
+    /* ── Search bar ───────────────────────────────────────────────────────── */
+    .search-form { display: flex; align-items: center; flex: 1; min-width: 180px; max-width: 440px; }
+    .search-wrap { display: flex; align-items: center; width: 100%; position: relative; }
+    .search-input {
+      font-family: inherit; font-size: .78rem;
+      width: 100%; padding: .26rem .65rem;
+      border: 1px solid var(--border); border-radius: 5px;
+      background: var(--surface); color: var(--text);
+      transition: border-color .15s, box-shadow .15s;
+    }
+    .search-input:focus {
+      outline: none; border-color: var(--primary);
+      box-shadow: 0 0 0 2px var(--primary-bg);
+    }
+    .search-input::placeholder { color: var(--text-muted); }
+    .clear-search-btn {
+      position: absolute; right: .4rem;
+      font-size: .72rem; color: var(--text-muted);
+      text-decoration: none; padding: .1rem .3rem;
+      border-radius: 3px; white-space: nowrap;
+      transition: color .1s, background .1s;
+    }
+    .clear-search-btn:hover { color: var(--text); background: var(--filter-bg); }
+
+    /* ── Search banner ────────────────────────────────────────────────────── */
+    .search-banner {
+      background: var(--primary-bg);
+      border: 1px solid var(--border); border-radius: 5px;
+      padding: .5rem .85rem; margin-bottom: .9rem;
+      display: flex; align-items: center; gap: .6rem; flex-wrap: wrap;
+      color: var(--text-sub);
+    }
+    .search-banner strong { color: var(--text); }
+    .search-banner .added-tag {
+      font-size: .72rem; font-weight: 600;
+      background: #1a7a3e22; color: #1a7a3e;
+      border-radius: 4px; padding: .1rem .45rem;
+    }
+    html.dark .search-banner .added-tag { background: #22c55e22; color: #4ade80; }
+    .search-banner .back-link {
+      margin-left: auto; color: var(--primary); text-decoration: none;
+      font-size: .78rem;
+    }
+    .search-banner .back-link:hover { text-decoration: underline; }
+    .search-error {
+      background: #c0392b11; border: 1px solid #c0392b44;
+      border-radius: 5px; padding: .5rem .85rem; margin-bottom: .9rem;
+      color: var(--danger);
+    }
+
+    /* ── Loading overlay ──────────────────────────────────────────────────── */
+    .loading-overlay {
+      display: none; position: fixed; inset: 0; z-index: 9999;
+      background: rgba(0,0,0,.45); align-items: center; justify-content: center;
+    }
+    .loading-overlay.active { display: flex; }
+    .loading-box {
+      background: var(--surface); border: 1px solid var(--border);
+      border-radius: 8px; padding: 1.5rem 2rem;
+      color: var(--text); text-align: center; box-shadow: 0 4px 24px rgba(0,0,0,.25);
+    }
+    .loading-spinner {
+      width: 28px; height: 28px; border: 3px solid var(--border);
+      border-top-color: var(--primary); border-radius: 50%;
+      animation: spin .7s linear infinite; margin: 0 auto .75rem;
+    }
+    @keyframes spin { to { transform: rotate(360deg); } }
 
     /* ── Tab bar ──────────────────────────────────────────────────────────── */
     .tab-bar {
@@ -276,14 +451,14 @@ TEMPLATE = """\
       border-radius: 5px;
       box-shadow: var(--shadow);
       padding: .7rem 1rem;
+      transition: opacity .3s, transform .3s;
     }
-    /* Left accent: bookmarked takes priority over viewed visually */
     .card.is-viewed     { border-left: 3px solid var(--accent-v) !important; }
     .card.is-bookmarked { border-left: 3px solid var(--accent-b) !important; }
-    /* Read: fade content only, leave controls usable */
     .card.is-read .paper-title a,
     .card.is-read .paper-authors,
     .card.is-read .abstract-text { opacity: .5; }
+    .card.deleting { opacity: 0; transform: translateX(40px); pointer-events: none; }
 
     .paper-title { margin-bottom: .16rem; }
     .paper-title a {
@@ -322,7 +497,16 @@ TEMPLATE = """\
     .paper-check:hover { color: var(--text-sub); }
     .paper-check input { cursor: pointer; margin: 0; accent-color: var(--primary); }
 
-    /* Abstract — left rule, comfortable line-height */
+    /* Delete button */
+    .delete-btn {
+      background: none; border: none; cursor: pointer;
+      color: var(--text-muted); padding: .1rem .2rem;
+      border-radius: 4px; display: inline-flex; align-items: center;
+      transition: color .15s, background .15s;
+    }
+    .delete-btn:hover { color: var(--danger); background: #c0392b14; }
+    .delete-btn svg { display: block; }
+
     .abstract-text {
       color: var(--text-sub); line-height: 1.65;
       border-left: 2px solid var(--border);
@@ -356,6 +540,19 @@ TEMPLATE = """\
   <div class="top-bar">
     <span class="sz-h1">AI/ML Paper Viewer</span>
     <span class="total">{{ total }} papers</span>
+    <form class="search-form" id="search-form" method="get" action="/">
+      <input type="hidden" name="prev_tab"  id="prev-tab-input"  value="{{ prev_tab }}">
+      <input type="hidden" name="prev_page" id="prev-page-input" value="{{ prev_page }}">
+      <div class="search-wrap">
+        <input class="search-input" type="text" name="search_url" id="search-input"
+               placeholder="Paste arXiv or OpenReview URL…"
+               value="{{ search_url or '' }}"
+               autocomplete="off" spellcheck="false">
+        {% if is_search_mode %}
+        <a class="clear-search-btn" href="?tab={{ prev_tab }}&page={{ prev_page }}">✕ Clear</a>
+        {% endif %}
+      </div>
+    </form>
     <div class="spacer"></div>
     <button class="theme-btn" id="theme-toggle">☾ Dark</button>
     <a href="/reload" class="reload-link">↺ Reload</a>
@@ -371,6 +568,20 @@ TEMPLATE = """\
     {% endfor %}
   </div>
 
+  {% if is_search_mode %}
+  <!-- Search banner / error -->
+  {% if search_error %}
+  <div class="search-error">{{ search_error }}</div>
+  {% else %}
+  <div class="search-banner">
+    <span>Showing result for <strong>{{ search_url }}</strong></span>
+    {% if search_added %}<span class="added-tag">+ added</span>{% endif %}
+    <a class="back-link" href="?tab={{ prev_tab }}&page={{ prev_page }}">← Back to list</a>
+  </div>
+  {% endif %}
+  {% endif %}
+
+  {% if not is_search_mode %}
   <!-- Filter bar -->
   <div class="filter-bar">
     <span class="filter-label">Show only</span>
@@ -395,6 +606,7 @@ TEMPLATE = """\
       {% endfor %}
     </select>
   </div>
+  {% endif %}
 
   <!-- Result count -->
   <p class="result-count">
@@ -415,7 +627,8 @@ TEMPLATE = """\
   {% set is_viewed     = p.viewed     == 'true' %}
   {% set is_read       = p['read']    == 'true' %}
   {% set is_bookmarked = p.bookmarked == 'true' %}
-  <div class="card{% if is_viewed %} is-viewed{% endif %}{% if is_bookmarked %} is-bookmarked{% endif %}{% if is_read %} is-read{% endif %}">
+  <div class="card{% if is_viewed %} is-viewed{% endif %}{% if is_bookmarked %} is-bookmarked{% endif %}{% if is_read %} is-read{% endif %}"
+       data-url="{{ p.paper_url }}">
 
     <div class="paper-title">
       <a href="{{ p.paper_url }}" target="_blank" rel="noopener"
@@ -461,6 +674,11 @@ TEMPLATE = """\
           <input type="checkbox" class="paper-check-input" data-url="{{ p.paper_url }}" data-field="bookmarked"
                  {% if is_bookmarked %}checked{% endif %}> Bookmarked
         </label>
+        <button class="delete-btn" data-url="{{ p.paper_url }}" title="Delete paper" type="button">
+          <svg width="14" height="14" viewBox="0 0 16 16" fill="none" xmlns="http://www.w3.org/2000/svg">
+            <path d="M2 4h12M5 4V2.5A.5.5 0 0 1 5.5 2h5a.5.5 0 0 1 .5.5V4M6.5 7v5M9.5 7v5M3 4l.9 9.1A1 1 0 0 0 4.9 14h6.2a1 1 0 0 0 1-.9L13 4" stroke="currentColor" stroke-width="1.4" stroke-linecap="round" stroke-linejoin="round"/>
+          </svg>
+        </button>
       </div>
     </div>
 
@@ -494,6 +712,14 @@ TEMPLATE = """\
   {% endif %}
 
 </div><!-- /wrap -->
+
+<!-- Loading overlay -->
+<div class="loading-overlay" id="loading-overlay">
+  <div class="loading-box">
+    <div class="loading-spinner"></div>
+    <div>Fetching paper info…</div>
+  </div>
+</div>
 
 <script>
 // ── Theme toggle ───────────────────────────────────────────────────────────────
@@ -550,6 +776,51 @@ document.querySelectorAll('.paper-link').forEach(a => {
   });
 });
 
+// ── Delete ─────────────────────────────────────────────────────────────────────
+document.querySelectorAll('.delete-btn').forEach(delBtn => {
+  delBtn.addEventListener('click', function() {
+    const url   = this.dataset.url;
+    const title = this.closest('.card')?.querySelector('.paper-title a')?.textContent?.trim() || url;
+    if (!confirm('Delete this paper from all TSV files?\\n\\n"' + title + '"')) return;
+    const card = this.closest('.card');
+    fetch('/delete', {
+      method: 'POST',
+      headers: {'Content-Type': 'application/json'},
+      body: JSON.stringify({paper_url: url})
+    })
+    .then(r => r.json())
+    .then(data => {
+      if (data.ok) {
+        card.classList.add('deleting');
+        card.addEventListener('transitionend', () => card.remove(), {once: true});
+      } else {
+        alert('Delete failed: ' + (data.error || 'unknown error'));
+      }
+    })
+    .catch(() => alert('Delete request failed.'));
+  });
+});
+
+// ── Search form ────────────────────────────────────────────────────────────────
+const searchForm  = document.getElementById('search-form');
+const searchInput = document.getElementById('search-input');
+const overlay     = document.getElementById('loading-overlay');
+
+searchForm?.addEventListener('submit', function(e) {
+  const val = searchInput.value.trim();
+  if (!val) { e.preventDefault(); return; }
+  // Fill in prev_tab and prev_page from current URL before submitting
+  const params = new URLSearchParams(window.location.search);
+  document.getElementById('prev-tab-input').value  = params.get('tab')  || '{{ tab }}';
+  document.getElementById('prev-page-input').value = params.get('page') || '1';
+  overlay.classList.add('active');
+});
+
+// Escape clears search input when focused
+searchInput?.addEventListener('keydown', function(e) {
+  if (e.key === 'Escape') { this.value = ''; this.blur(); }
+});
+
 // ── Filters ────────────────────────────────────────────────────────────────────
 ['filter-viewed', 'filter-read', 'filter-bookmarked', 'filter-labelled'].forEach(id => {
   document.getElementById(id)?.addEventListener('change', function() {
@@ -579,57 +850,84 @@ document.getElementById('filter-venue')?.addEventListener('change', function() {
 
 @app.route("/")
 def index():
+    search_url = request.args.get("search_url", "").strip()
+    prev_tab   = request.args.get("prev_tab",  ALL_TABS[0]).strip() or ALL_TABS[0]
+    prev_page  = request.args.get("prev_page", "1").strip() or "1"
+
+    is_search_mode = bool(search_url)
+    search_paper   = None
+    search_error   = ""
+    search_added   = False
+
+    if is_search_mode:
+        result = lookup_or_fetch_paper(search_url)
+        if result is None:
+            search_error = f"Could not find or fetch paper for: {search_url}"
+        else:
+            search_paper, search_added = result
+
     papers = load_papers()
     groups = group_by_tab(papers)
+    counts = {t: len(groups.get(t, [])) for t in ALL_TABS}
 
-    tab = request.args.get("tab", ALL_TABS[0])
-    if tab not in ALL_TABS:
-        tab = ALL_TABS[0]
-
-    try:
-        page = max(1, int(request.args.get("page", 1) or 1))
-    except (ValueError, TypeError):
-        page = 1
-
+    # Filter state — always computed so template variables are always defined
     show_viewed     = request.args.get("show_viewed",     "") == "1"
     show_read       = request.args.get("show_read",       "") == "1"
     show_bookmarked = request.args.get("show_bookmarked", "") == "1"
     show_labelled   = request.args.get("show_labelled",   "") == "1"
     filter_venue    = request.args.get("venue", "").strip()
-    any_filter      = show_viewed or show_read or show_bookmarked or show_labelled or filter_venue
-
+    any_filter      = bool(show_viewed or show_read or show_bookmarked or show_labelled or filter_venue)
     filter_qs = ""
     if show_viewed:     filter_qs += "&show_viewed=1"
     if show_read:       filter_qs += "&show_read=1"
     if show_bookmarked: filter_qs += "&show_bookmarked=1"
     if show_labelled:   filter_qs += "&show_labelled=1"
     if filter_venue:    filter_qs += f"&venue={filter_venue}"
-
     all_venues = sorted({
         p.get("place", "").strip()
         for p in papers
         if p.get("place", "").strip()
     })
 
-    tab_papers = groups.get(tab, [])
+    if is_search_mode and search_paper:
+        cat = (search_paper.get("category") or "").strip()
+        tab         = cat if cat in CATEGORIES else "others"
+        shown       = [search_paper]
+        tab_count   = 1
+        total_pages = 1
+        page        = 1
+        start       = 0
+    else:
+        if is_search_mode:
+            tab = prev_tab if prev_tab in ALL_TABS else ALL_TABS[0]
+        else:
+            tab = request.args.get("tab", ALL_TABS[0])
+            if tab not in ALL_TABS:
+                tab = ALL_TABS[0]
 
-    if show_viewed or show_read or show_bookmarked or show_labelled:
-        tab_papers = [
-            p for p in tab_papers
-            if (show_viewed     and p.get("viewed")     == "true")
-            or (show_read       and p.get("read")        == "true")
-            or (show_bookmarked and p.get("bookmarked")  == "true")
-            or (show_labelled   and p.get("labelled")    == "true")
-        ]
-    if filter_venue:
-        tab_papers = [p for p in tab_papers if p.get("place", "").strip() == filter_venue]
+        try:
+            page = max(1, int(request.args.get("page", 1) or 1))
+        except (ValueError, TypeError):
+            page = 1
 
-    tab_count   = len(tab_papers)
-    total_pages = max(1, (tab_count + PAGE_SIZE - 1) // PAGE_SIZE)
-    page        = min(page, total_pages)
-    start       = (page - 1) * PAGE_SIZE
-    shown       = tab_papers[start: start + PAGE_SIZE]
-    counts      = {t: len(groups.get(t, [])) for t in ALL_TABS}
+        tab_papers = groups.get(tab, [])
+        if not is_search_mode:
+            if show_viewed or show_read or show_bookmarked or show_labelled:
+                tab_papers = [
+                    p for p in tab_papers
+                    if (show_viewed     and p.get("viewed")     == "true")
+                    or (show_read       and p.get("read")        == "true")
+                    or (show_bookmarked and p.get("bookmarked")  == "true")
+                    or (show_labelled   and p.get("labelled")    == "true")
+                ]
+            if filter_venue:
+                tab_papers = [p for p in tab_papers if p.get("place", "").strip() == filter_venue]
+
+        tab_count   = len(tab_papers)
+        total_pages = max(1, (tab_count + PAGE_SIZE - 1) // PAGE_SIZE)
+        page        = min(page, total_pages)
+        start       = (page - 1) * PAGE_SIZE
+        shown       = tab_papers[start: start + PAGE_SIZE]
 
     return render_template_string(
         TEMPLATE,
@@ -644,6 +942,10 @@ def index():
         show_bookmarked=show_bookmarked, show_labelled=show_labelled,
         filter_venue=filter_venue, all_venues=all_venues,
         any_filter=any_filter, filter_qs=filter_qs,
+        is_search_mode=is_search_mode,
+        search_url=search_url, search_error=search_error,
+        search_added=search_added,
+        prev_tab=prev_tab, prev_page=prev_page,
     )
 
 
@@ -658,6 +960,16 @@ def update_paper():
         return jsonify(ok=False, error="invalid params"), 400
 
     ok = update_paper_field(paper_url, {field: value})
+    return jsonify(ok=ok)
+
+
+@app.route("/delete", methods=["POST"])
+def delete_paper():
+    data      = request.get_json(force=True, silent=True) or {}
+    paper_url = (data.get("paper_url") or "").strip()
+    if not paper_url:
+        return jsonify(ok=False, error="missing paper_url"), 400
+    ok = delete_paper_from_tsvs(paper_url)
     return jsonify(ok=ok)
 
 

@@ -53,15 +53,28 @@ RULES: dict[str, list[tuple[list[str], int]]] = {
           "feature visualization", "causal intervention",
           "information flow analysis", "probing classifier",
           "grokking", "sycophancy analysis", "safeguards", "safety",
-          "robustness", "robust", "adversarial", "attack", "safe",
-          "alignment", "prompt injection", "exfiltration", "vulnerable",
+          "prompt injection", "exfiltration", "vulnerable",
           "vulnerability", "control safety", "control evaluation",
           "misalignment", "reward hacking", "circuits",
           "sycophancy", "jailbreak", "privileged instructions",
-          "knowledge circuit", "mech interp"], 4),
+          "knowledge circuit", "mech interp",
+          # compound forms replace bare "adversarial", "attack", "robust", "alignment"
+          "adversarial attack", "adversarial example", "adversarial perturbation",
+          "adversarial robustness", "adversarial prompt",
+          "safety alignment", "ai alignment", "value alignment", "human alignment",
+          "red teaming", "red-teaming",
+          "backdoor attack", "data poisoning",
+          "harmful content", "harmlessness", "harmless",
+          # factuality / deception / oversight
+          "hallucination", "hallucinated", "deception", "toxicity",
+          "steering vector", "steering vectors",
+          "constitutional ai", "crosscoder",
+          "elicitation", "oversight", "scalable oversight",
+          ], 4),
         (["interpretability", "probing", "mechanistic", "induction circuit",
           "attention head analysis", "feature geometry",
-          "internal representation", "knowledge editing"], 2),
+          "internal representation"], 2),
+          # "knowledge editing" moved to memory
     ],
 
     "voice": [
@@ -122,11 +135,25 @@ RULES: dict[str, list[tuple[list[str], int]]] = {
           "long-context retrieval", "in-context retrieval",
           "memory-enhanced", "recurrent memory transformer",
           "grounded retrieval", "external knowledge retrieval",
-          "memory management for", "persistent memory"], 4),
-        (["memory", "memories", "memory slot", "memory cell",
+          "memory management for", "persistent memory",
+          "knowledge editing",
+          "retrieval-augmented generation", "retrieval augmented generation",
+          # broader retrieval signals (REALM, "via Retrieval Augmentation", etc.)
+          "retrieval-augmented", "retrieval augmentation", "retrieval augmented",
+          # memorising/kNN language models
+          "memorizing", "memorization",
+          "nearest neighbor language", "knn language model",
+          ], 4),
+        (["memory slot", "memory cell",
           "knowledge store", "memory mechanism",
           "episodic buffer", "memory replay", "longmemeval",
-          "long-context memory"], 2),
+          "long-context memory",
+          # moved from score-4 — these phrases appear widely in non-memory intros
+          "short-term memory", "long-term memory",
+          # kNN-based retrieval systems
+          "knn",
+          # "retrieval" and "nearest neighbor" removed — too broad, caused 25+ FPs
+          ], 2),
     ],
 
     "models": [
@@ -153,31 +180,71 @@ RULES: dict[str, list[tuple[list[str], int]]] = {
           "positional encoding design", "relative positional",
           "attention mechanism design", "transformer design",
           "architecture search",
-          # Theory
+          # Architecture additions
+          "generative adversarial network", "variational autoencoder",
+          "long short-term memory", "gated recurrent unit",
+          "sequence to sequence model", "encoder-decoder architecture",
+          "scaling laws", "scaling law",
+          # classic architecture papers missing keyword coverage
+          "batch normalization", "residual learning", "skip connection",
+          "multi-head attention",
+          "message passing", "graph neural network", "graph neural",
+          # additional classic architecture / representation papers
+          "sequence-to-sequence", "sequence to sequence",
+          "wasserstein", "word2vec",
+          "variational inference", "variational bayes",
+          "distributed representation", "word representation",
+          "deep reinforcement learning",
+          # NLP / non-vision architecture papers going to (none) or vision
+          "language modeling", "language model design",
+          "neural machine translation",
+          "sentence classification", "text classification",
+          "machine comprehension", "reading comprehension",
+          "network compression", "model compression", "model quantization", "network pruning",
+          "generative model",
+          "dilated convolution", "atrous convolution",
+          "pipeline parallelism",
+          "spatial pyramid", "feature pyramid",
+          "depthwise convolution", "depthwise separable",
+          "tensorflow", "pytorch framework",
+          # classic architecture phrases that rescue deep CNN papers going to vision
+          "deep convolutional network", "convolutional neural networks for",
+          "question answering",
+          "relational network", "relational reasoning",
+          "deformable convolutional",
+          "autoregressive model", "autoregressive generation",
+          # Theory (specific only — removed ultra-generic: "why", "understanding",
+          # "weights", "bounds", "proving", "proof", "exploring", "is all you need",
+          # "are equivalent", "neurons", "we prove that", "we establish that")
+          # "implicit regularization", "implicit bias", "loss landscape" moved to training
           "pac learning", "vc dimension", "rademacher complexity",
           "generalization bound", "excess risk bound", "sample complexity",
           "convergence proof", "convergence rate analysis",
           "neural tangent kernel", "mean field theory",
           "information bottleneck", "statistical learning theory",
           "overparameterization", "double descent",
-          "benign overfitting", "implicit regularization", "implicit bias",
-          "loss landscape", "saddle point", "gradient flow analysis",
+          "benign overfitting",
+          "saddle point", "gradient flow analysis",
           "regret bound", "online learning theory",
           "learnability", "expressivity of",
           "approximation theory", "universal approximation",
           "computational complexity of learning",
-          "we prove that", "we establish that", "why", "neurons",
-          "understanding", "weights", "bounds", "proving", "proof",
-          "exploring", "is all you need", "theorem", "are equivalent",
-          "tight bound", "minimax optimal"], 4),
+          "theorem", "tight bound", "minimax optimal"], 4),
         (["transformer", "attention mechanism", "self-attention",
-          "architecture", "ssm", "residual", "feed-forward",
-          "positional encoding", "normalization", "tokenizer",
+          "ssm", "residual", "feed-forward",
+          "positional encoding", "tokenizer",
           "gating mechanism", "recurrent layer", "moe",
-          "convergence analysis", "convergence rate",
+          "convergence rate",
           "regret bound", "regret analysis",
           "learnability", "lower bound on", "upper bound on",
-          "theoretical analysis", "approximation bound"], 2),
+          "approximation bound",
+          # broader coverage for classic architecture papers in (none)
+          "recurrent neural", "encoder-decoder", "autoencoder",
+          "word embedding", "representation learning",
+          "convolutional", "activation function", "feature embedding",
+          "recurrent network",
+          ], 2),
+          # removed "architecture", "normalization", "convergence analysis", "theoretical analysis"
     ],
 
     "training": [
@@ -205,12 +272,38 @@ RULES: dict[str, list[tuple[list[str], int]]] = {
           "post-training alignment", "alignment fine-tuning",
           "reinforcement learning for", "reinforcement learning to",
           "rl training", "rl fine-tuning",
-          "proximal policy optimization for llm"], 4),
+          "proximal policy optimization for llm",
+          # SGD / optimizer analysis papers
+          "stochastic gradient descent",
+          "training dynamics", "learning dynamics",
+          "loss landscape", "implicit regularization", "implicit bias",
+          # meta-learning and few-shot
+          "meta-learning", "model-agnostic meta-learning",
+          "few-shot learning", "few-shot classification", "few-shot adaptation",
+          "learning to learn",
+          # distillation
+          "knowledge distillation", "teacher-student",
+          # gradient analysis
+          "gradient noise", "sharpness aware minimization",
+          # optimizer papers that test on vision benchmarks (need strong title signal)
+          "optimizer", "adaptive learning rate", "momentum",
+          "optimization technique", "gradient centralization",
+          # one-shot / few-shot learning papers (including k-shot variants)
+          "one-shot learning", "zero-shot learning", "shot learning", "one-shot",
+          # RL / optimization dynamics / convex methods
+          "temporal difference", "td-learning", "optimization dynamics",
+          "first-order optimization", "convex optimization",
+          # adam optimizer — score-4 needed to beat models score for Adam paper
+          "adam",
+          ], 4),
         (["fine-tuning", "finetuning", "training method",
           "gradient descent", "optimization algorithm",
           "weight update", "backpropagation", "pretraining method",
           "data augmentation", "regularization", "dropout",
-          "reinforcement learning"], 2),
+          # removed "reinforcement learning" (caused 21 FPs)
+          # "one-shot" promoted to score-4 above
+          "sgd", "few-shot", "hypernetwork",
+          ], 2),
     ],
 
 }
@@ -277,10 +370,14 @@ def classify(title: str, abstract: str, keywords: str = "") -> str:
             totals[cat] += pts
 
     # memory and safety are easily drowned out by accumulated generic architecture
-    # signals. When their specific phrases appear (≥4 means at least one concrete match),
-    # multiply their score by 5 so they dominate all other categories.
+    # signals. Apply ×5 only when the raw score meets a per-category threshold:
+    #   safety ≥ 6  — one title match or two distinct abstract matches
+    #   memory ≥ 8  — higher bar needed because "memory", "short-term memory",
+    #                 "retrieval" etc. all appear in non-memory paper abstracts
+    MULT_THRESHOLD = {"safety": 6, "memory": 11}
     for cat in ("memory", "safety"):
-        totals[cat] *= 5
+        if totals[cat] >= MULT_THRESHOLD[cat]:
+            totals[cat] *= 5
 
     best_score = max(totals.values())
     if best_score < MIN_SCORE:

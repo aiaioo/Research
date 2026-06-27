@@ -1781,6 +1781,125 @@ def _backfill_pmlr_rss(paths: list) -> None:
         print(f"  {path.name}: PMLR done ({total_fixed} total rows updated)", flush=True)
 
 
+# ── Repair bloated HuggingFace rows ───────────────────────────────────────────
+
+def repair_bloated_abstracts(paths: list) -> int:
+    """
+    Detect and repair TSV rows where the abstract field contains multiple embedded
+    paper records from a HuggingFace page that was not split into individual papers.
+
+    Pattern: the abstract contains 2+ occurrences of:
+        YYYYMMDD  Hugging Face Papers  https://huggingface.co/papers  https://arxiv.org/abs/ID
+
+    Each such line is the metadata header of an embedded paper. The arxiv ID in
+    separator N belongs to the paper whose content *precedes* separator N (offset-by-one);
+    the paper that follows separator N gets its arxiv ID from separator N+1.  The last
+    embedded paper has no following separator so its paper_url is left blank for backfill.
+
+    Returns the total number of embedded papers recovered across all files.
+    """
+    SEP_RE = re.compile(
+        r'(\d{8}\s+Hugging\s+Face\s+Papers\s+'
+        r'https://huggingface\.co/papers\s+'
+        r'https://arxiv\.org/abs/(\d{4}\.\d{4,5}))'
+    )
+
+    # Lazy import so paper_searcher stays usable without paper_categorizer installed.
+    try:
+        from paper_categorizer import classify as _classify
+        _have_classifier = True
+    except ImportError:
+        _have_classifier = False
+
+    total_recovered = 0
+
+    for path in paths:
+        if not path.exists():
+            continue
+        with path.open(newline="", encoding="utf-8") as f:
+            reader     = csv.DictReader(f, delimiter="\t")
+            fieldnames = list(reader.fieldnames or [])
+            rows       = list(reader)
+
+        existing_urls = {r.get("paper_url", "") for r in rows}
+        new_rows: list        = []
+        recovered_in_file = 0
+
+        for row in rows:
+            abstract    = row.get("abstract", "")
+            match_count = len(SEP_RE.findall(abstract))
+
+            if match_count < 2:
+                new_rows.append(row)
+                continue
+
+            # Split the bloated abstract on every separator.
+            # re.split with 2 capturing groups yields:
+            #   [pre, full_sep_0, arxiv_0, post_0, full_sep_1, arxiv_1, post_1, …]
+            segments = SEP_RE.split(abstract)
+            n_seps   = (len(segments) - 1) // 3
+
+            # Fix the host row — trim abstract to only the real content (segment 0).
+            fixed = dict(row)
+            fixed["abstract"] = segments[0].strip()
+            new_rows.append(fixed)
+
+            print(f"    [{path.name}] splitting bloated row: {row.get('title','')[:60]}")
+
+            # Recover each embedded paper.
+            # Each separator's arxiv ID is the URL of the paper whose content *follows*
+            # that separator (verified empirically: sep at pos k has arxiv=X, and the
+            # paper scraped independently with paper_url X matches the title after the sep).
+            for k in range(n_seps):
+                post = segments[3 + 3 * k].lstrip("\t\r\n")
+                parts        = post.split("\t", 3)
+                emb_title    = parts[0].strip()                          if len(parts) > 0 else ""
+                emb_authors  = parts[1].strip()                          if len(parts) > 1 else ""
+                emb_abstract = parts[2].strip()                          if len(parts) > 2 else ""
+                # keywords field may have trailing empty TSV columns — keep only first token
+                emb_keywords = parts[3].split("\t")[0].strip("\r\n ")    if len(parts) > 3 else ""
+
+                # arxiv URL is in *this* separator (not the next one)
+                emb_url = f"https://arxiv.org/abs/{segments[2 + 3*k]}"
+
+                if not emb_title:
+                    continue
+                if emb_url and emb_url in existing_urls:
+                    print(f"      skip duplicate: {emb_title[:60]}")
+                    continue
+
+                emb_row: dict = {f: "" for f in SEEN_FIELDS}
+                emb_row["date_seen"]   = row.get("date_seen", TODAY)
+                emb_row["source_name"] = row.get("source_name", "")
+                emb_row["source_url"]  = row.get("source_url", "")
+                emb_row["paper_url"]   = emb_url
+                emb_row["title"]       = emb_title
+                emb_row["authors"]     = emb_authors
+                emb_row["abstract"]    = emb_abstract
+                emb_row["keywords"]    = emb_keywords
+                if _have_classifier:
+                    emb_row["category"] = _classify(emb_title, emb_abstract, emb_keywords)
+
+                new_rows.append(emb_row)
+                existing_urls.add(emb_url)
+                recovered_in_file += 1
+                print(f"      + {emb_title[:65]}  [{emb_row.get('category','')}]")
+
+        if recovered_in_file:
+            for col in SEEN_FIELDS:
+                if col not in fieldnames:
+                    fieldnames.append(col)
+            with path.open("w", newline="", encoding="utf-8") as f:
+                writer = csv.DictWriter(f, fieldnames=SEEN_FIELDS, delimiter="\t",
+                                        restval="", extrasaction="ignore")
+                writer.writeheader()
+                writer.writerows(new_rows)
+            print(f"  {path.name}: recovered {recovered_in_file} paper(s)", flush=True)
+            total_recovered += recovered_in_file
+
+    return total_recovered
+
+
 # ── Diagnostic helpers ─────────────────────────────────────────────────────────
 
 def diagnose_missing(paths: list) -> None:
@@ -1885,6 +2004,10 @@ def main() -> None:
         help="Source groups to check: curated, uncurated, educational, corporate, conferences, journals, all",
     )
     parser.add_argument(
+        "--repair", action="store_true",
+        help="Split bloated rows where multiple HuggingFace papers were stored in one abstract",
+    )
+    parser.add_argument(
         "--backfill", action="store_true",
         help="Re-enrich rows missing title/abstract in all seen/new TSV files, then exit",
     )
@@ -1901,6 +2024,14 @@ def main() -> None:
         help="Fetch PMLR RSS for a specific volume number and show sample results",
     )
     args = parser.parse_args()
+
+    if args.repair:
+        paths = (sorted(PAPERS_DIR.glob("seen_papers_*.tsv"))
+                 + sorted(PAPERS_DIR.glob("new_papers_*.tsv")))
+        print(f"Scanning {len(paths)} file(s) for bloated HuggingFace rows …\n")
+        n = repair_bloated_abstracts(paths)
+        print(f"\nDone — {n} paper(s) recovered.")
+        return
 
     if args.diagnose:
         paths = (sorted(PAPERS_DIR.glob("seen_papers_*.tsv"))
