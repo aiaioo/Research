@@ -14,6 +14,7 @@ from datetime import datetime
 from pathlib import Path
 
 from flask import Flask, jsonify, redirect, render_template_string, request, url_for
+from markupsafe import Markup, escape
 
 ROOT       = Path(__file__).parent
 PAPERS_DIR = ROOT / "papers"
@@ -47,6 +48,51 @@ try:
     _CLASSIFY_AVAILABLE = True
 except ImportError:
     _CLASSIFY_AVAILABLE = False
+
+try:
+    from paper_categorizer import (
+        load_impactful_researchers as _load_researchers,
+        load_impactful_institutions as _load_institutions,
+        _normalize_author_name,
+    )
+    _IMPACTFUL_AVAILABLE = True
+except ImportError:
+    _IMPACTFUL_AVAILABLE = False
+    def _normalize_author_name(name: str) -> str:
+        return name.strip()
+
+_researchers_cache: dict | None = None
+_institutions_cache: set | None = None
+
+
+def _get_impactful_data() -> tuple[dict, set]:
+    global _researchers_cache, _institutions_cache
+    if _researchers_cache is None:
+        if _IMPACTFUL_AVAILABLE:
+            _researchers_cache = _load_researchers()
+            _institutions_cache = _load_institutions()
+        else:
+            _researchers_cache = {}
+            _institutions_cache = set()
+    return _researchers_cache, (_institutions_cache or set())
+
+
+@app.template_filter("highlight_authors")
+def highlight_authors_filter(authors_str: str) -> Markup:
+    if not authors_str:
+        return Markup("")
+    ir, _ = _get_impactful_data()
+    if not ir:
+        return Markup(escape(authors_str))
+    parts = []
+    for raw in authors_str.split(","):
+        stripped = raw.strip()
+        norm = _normalize_author_name(stripped)
+        if norm in ir:
+            parts.append(f'<span class="impactful-author">{escape(stripped)}</span>')
+        else:
+            parts.append(str(escape(stripped)))
+    return Markup(", ".join(parts))
 
 
 # ── Data loading ───────────────────────────────────────────────────────────────
@@ -532,6 +578,24 @@ TEMPLATE = """\
     .page-link:hover  { background: var(--filter-bg); color: var(--text); border-color: var(--text-muted); }
     .page-link.active { background: var(--primary); border-color: var(--primary); color: #fff; font-weight: 600; }
     .page-link.disabled { opacity: .32; pointer-events: none; }
+
+    /* ── Impactful highlights ─────────────────────────────────────────────── */
+    .impactful-author {
+      color: #16a34a; font-weight: 600;
+    }
+    html.dark .impactful-author {
+      color: #39ff14;
+      text-shadow: 0 0 7px rgba(57,255,20,.45);
+    }
+    .impactful-inst-tag {
+      font-size: .67rem; font-weight: 600;
+      background: #16a34a1a; color: #16a34a;
+      border-radius: 4px; padding: .04rem .4rem;
+      white-space: nowrap;
+    }
+    html.dark .impactful-inst-tag {
+      background: #39ff1420; color: #39ff14;
+    }
   </style>
 </head>
 <body>
@@ -600,6 +664,13 @@ TEMPLATE = """\
       <input type="checkbox" id="filter-labelled" {% if show_labelled %}checked{% endif %}> Labelled
     </label>
     <div class="filter-divider"></div>
+    <label class="filter-check">
+      <input type="checkbox" id="filter-impactful-researcher" {% if show_impactful_researcher %}checked{% endif %}> <span class="impactful-author">Impactful Researcher</span>
+    </label>
+    <label class="filter-check">
+      <input type="checkbox" id="filter-impactful-institution" {% if show_impactful_institution %}checked{% endif %}> <span class="impactful-author">Impactful Institution</span>
+    </label>
+    <div class="filter-divider"></div>
     <select class="venue-select" id="filter-venue">
       <option value="">All venues</option>
       {% for v in all_venues %}
@@ -639,7 +710,7 @@ TEMPLATE = """\
     </div>
 
     {% if p.authors %}
-    <div class="paper-authors">{{ p.authors }}</div>
+    <div class="paper-authors">{{ p.authors | highlight_authors }}{% if p.impactful_institution == 'true' %} <span class="impactful-inst-tag">Impactful Institution</span>{% endif %}</div>
     {% endif %}
 
     <div class="paper-meta">
@@ -823,10 +894,11 @@ searchInput?.addEventListener('keydown', function(e) {
 });
 
 // ── Filters ────────────────────────────────────────────────────────────────────
-['filter-viewed', 'filter-read', 'filter-bookmarked', 'filter-labelled'].forEach(id => {
+['filter-viewed', 'filter-read', 'filter-bookmarked', 'filter-labelled',
+ 'filter-impactful-researcher', 'filter-impactful-institution'].forEach(id => {
   document.getElementById(id)?.addEventListener('change', function() {
     const params = new URLSearchParams(window.location.search);
-    const key = id.replace('filter-', 'show_');
+    const key = id.replace('filter-', 'show_').replace(/-/g, '_');
     if (this.checked) params.set(key, '1');
     else params.delete(key);
     params.set('page', '1');
@@ -872,18 +944,24 @@ def index():
     counts = {t: len(groups.get(t, [])) for t in ALL_TABS}
 
     # Filter state — always computed so template variables are always defined
-    show_viewed     = request.args.get("show_viewed",     "") == "1"
-    show_read       = request.args.get("show_read",       "") == "1"
-    show_bookmarked = request.args.get("show_bookmarked", "") == "1"
-    show_labelled   = request.args.get("show_labelled",   "") == "1"
-    filter_venue    = request.args.get("venue", "").strip()
-    any_filter      = bool(show_viewed or show_read or show_bookmarked or show_labelled or filter_venue)
+    show_viewed               = request.args.get("show_viewed",               "") == "1"
+    show_read                 = request.args.get("show_read",                 "") == "1"
+    show_bookmarked           = request.args.get("show_bookmarked",           "") == "1"
+    show_labelled             = request.args.get("show_labelled",             "") == "1"
+    show_impactful_researcher = request.args.get("show_impactful_researcher", "") == "1"
+    show_impactful_institution= request.args.get("show_impactful_institution","") == "1"
+    filter_venue              = request.args.get("venue", "").strip()
+    any_filter = bool(show_viewed or show_read or show_bookmarked or show_labelled
+                      or show_impactful_researcher or show_impactful_institution
+                      or filter_venue)
     filter_qs = ""
-    if show_viewed:     filter_qs += "&show_viewed=1"
-    if show_read:       filter_qs += "&show_read=1"
-    if show_bookmarked: filter_qs += "&show_bookmarked=1"
-    if show_labelled:   filter_qs += "&show_labelled=1"
-    if filter_venue:    filter_qs += f"&venue={filter_venue}"
+    if show_viewed:                filter_qs += "&show_viewed=1"
+    if show_read:                  filter_qs += "&show_read=1"
+    if show_bookmarked:            filter_qs += "&show_bookmarked=1"
+    if show_labelled:              filter_qs += "&show_labelled=1"
+    if show_impactful_researcher:  filter_qs += "&show_impactful_researcher=1"
+    if show_impactful_institution: filter_qs += "&show_impactful_institution=1"
+    if filter_venue:               filter_qs += f"&venue={filter_venue}"
     all_venues = sorted({
         p.get("place", "").strip()
         for p in papers
@@ -913,13 +991,15 @@ def index():
 
         tab_papers = groups.get(tab, [])
         if not is_search_mode:
-            if show_viewed or show_read or show_bookmarked or show_labelled:
+            if show_viewed or show_read or show_bookmarked or show_labelled or show_impactful_researcher or show_impactful_institution:
                 tab_papers = [
                     p for p in tab_papers
-                    if (show_viewed     and p.get("viewed")     == "true")
-                    or (show_read       and p.get("read")        == "true")
-                    or (show_bookmarked and p.get("bookmarked")  == "true")
-                    or (show_labelled   and p.get("labelled")    == "true")
+                    if (show_viewed               and p.get("viewed")               == "true")
+                    or (show_read                 and p.get("read")                  == "true")
+                    or (show_bookmarked           and p.get("bookmarked")            == "true")
+                    or (show_labelled             and p.get("labelled")              == "true")
+                    or (show_impactful_researcher and p.get("impactful_researcher")  == "true")
+                    or (show_impactful_institution and p.get("impactful_institution") == "true")
                 ]
             if filter_venue:
                 tab_papers = [p for p in tab_papers if p.get("place", "").strip() == filter_venue]
@@ -941,6 +1021,8 @@ def index():
         page_range=build_page_range(page, total_pages),
         show_viewed=show_viewed, show_read=show_read,
         show_bookmarked=show_bookmarked, show_labelled=show_labelled,
+        show_impactful_researcher=show_impactful_researcher,
+        show_impactful_institution=show_impactful_institution,
         filter_venue=filter_venue, all_venues=all_venues,
         any_filter=any_filter, filter_qs=filter_qs,
         is_search_mode=is_search_mode,
@@ -976,8 +1058,10 @@ def delete_paper():
 
 @app.route("/reload")
 def reload_cache():
-    global _cache
+    global _cache, _researchers_cache, _institutions_cache
     _cache = None
+    _researchers_cache = None
+    _institutions_cache = None
     return redirect(url_for("index"))
 
 
