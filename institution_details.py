@@ -32,21 +32,20 @@ MAX_DELAY = 60   # seconds
 
 # ── helpers ──────────────────────────────────────────────────────────────────
 
-def _latest_institutions_tsv() -> Path | None:
-    files = sorted(PEOPLE_DIR.glob("INSTITUTIONS_FREQUENCY_*.tsv"))
-    return files[-1] if files else None
-
-
 def load_institutions() -> list[str]:
-    path = _latest_institutions_tsv()
-    if not path:
+    """Load from ALL frequency TSVs sorted by filename, deduplicated in first-seen order."""
+    files = sorted(PEOPLE_DIR.glob("INSTITUTIONS_FREQUENCY_*.tsv"))
+    if not files:
         return []
+    seen: set[str] = set()
     institutions: list[str] = []
-    with path.open(newline="", encoding="utf-8") as f:
-        for row in csv.DictReader(f, delimiter="\t"):
-            inst = row.get("institution", "").strip()
-            if inst:
-                institutions.append(inst)
+    for path in files:
+        with path.open(newline="", encoding="utf-8") as f:
+            for row in csv.DictReader(f, delimiter="\t"):
+                inst = row.get("institution", "").strip()
+                if inst and inst not in seen:
+                    seen.add(inst)
+                    institutions.append(inst)
     return institutions
 
 
@@ -211,10 +210,19 @@ async def main():
         print("No institutions found in INSTITUTIONS_FREQUENCY_*.tsv")
         return
 
-    details    = load_details()
-    todo       = [inst for inst in institutions if inst not in details]
+    details = load_details()
+    total   = len(institutions)
+
+    # Resume from the position after the last institution already in details,
+    # so previously-written entries are never re-fetched or reordered.
+    resume_idx = 0
+    for i, inst in enumerate(institutions):
+        if inst in details:
+            resume_idx = i + 1
+
+    # Within the remaining slice, skip any that were somehow already processed.
+    todo       = [inst for inst in institutions[resume_idx:] if inst not in details]
     done_count = len(details)
-    total      = len(institutions)
 
     print(f"Institutions total : {total}")
     print(f"Already resolved   : {done_count}")
