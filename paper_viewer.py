@@ -193,7 +193,7 @@ def update_paper_field(paper_url: str, updates: dict) -> bool:
                     r.setdefault(col, "")
         found = False
         for row in rows:
-            if row.get("paper_url", "").strip() == paper_url:
+            if (row.get("paper_url") or "").strip() == paper_url:
                 for field, value in updates.items():
                     row[field] = value
                 found = True
@@ -223,7 +223,7 @@ def delete_paper_from_tsvs(paper_url: str) -> bool:
             reader     = csv.DictReader(f, delimiter="\t")
             fieldnames = list(reader.fieldnames or [])
             rows       = list(reader)
-        new_rows = [r for r in rows if r.get("paper_url", "").strip() != paper_url]
+        new_rows = [r for r in rows if (r.get("paper_url") or "").strip() != paper_url]
         if len(new_rows) < len(rows):
             with path.open("w", newline="", encoding="utf-8") as f:
                 writer = csv.DictWriter(f, fieldnames=fieldnames, delimiter="\t",

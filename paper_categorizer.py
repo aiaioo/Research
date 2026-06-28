@@ -341,17 +341,29 @@ def _normalize_author_name(name: str) -> str:
 
 def load_impactful_researchers(min_citations: int = 10_000) -> dict[str, dict]:
     """Return a dict of author name → row for researchers with citations > min_citations."""
-    path = _latest_tsv("RESEARCHERS_FREQUENCY_*.tsv")
-    if not path:
-        return {}
     result: dict[str, dict] = {}
-    with path.open(newline="", encoding="utf-8") as f:
-        for row in csv.DictReader(f, delimiter="\t"):
-            try:
-                if int(row.get("citations") or 0) > min_citations:
-                    result[row["author"]] = row
-            except ValueError:
-                pass
+
+    path = _latest_tsv("RESEARCHERS_FREQUENCY_*.tsv")
+    if path:
+        with path.open(newline="", encoding="utf-8") as f:
+            for row in csv.DictReader(f, delimiter="\t"):
+                try:
+                    if int(row.get("citations") or 0) > min_citations:
+                        result[row["author"]] = row
+                except ValueError:
+                    pass
+
+    top_path = PEOPLE_DIR / "TOP_RESEARCHERS.tsv"
+    if top_path.exists():
+        with top_path.open(newline="", encoding="utf-8") as f:
+            for row in csv.DictReader(f, delimiter="\t"):
+                try:
+                    name = row.get("name", "").strip()
+                    if name and name not in result and int(row.get("citations") or 0) > min_citations:
+                        result[name] = row
+                except ValueError:
+                    pass
+
     return result
 
 
