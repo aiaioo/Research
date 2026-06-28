@@ -77,6 +77,32 @@ def _get_impactful_data() -> tuple[dict, set]:
     return _researchers_cache, (_institutions_cache or set())
 
 
+def _extract_institution_name(affiliation: str) -> str:
+    if not affiliation:
+        return ""
+    idx = affiliation.find(", ")
+    return affiliation[idx + 2:].strip() if idx != -1 else affiliation.strip()
+
+
+@app.template_filter("paper_institution_names")
+def paper_institution_names_filter(authors_str: str) -> list:
+    if not authors_str:
+        return []
+    ir, _ = _get_impactful_data()
+    if not ir:
+        return []
+    seen: set = set()
+    names: list = []
+    for raw in authors_str.split(","):
+        norm = _normalize_author_name(raw.strip())
+        if norm in ir:
+            inst = _extract_institution_name(ir[norm].get("affiliation", ""))
+            if inst and inst not in seen:
+                seen.add(inst)
+                names.append(inst)
+    return names
+
+
 @app.template_filter("highlight_authors")
 def highlight_authors_filter(authors_str: str) -> Markup:
     if not authors_str:
@@ -710,7 +736,7 @@ TEMPLATE = """\
     </div>
 
     {% if p.authors %}
-    <div class="paper-authors">{{ p.authors | highlight_authors }}{% if p.impactful_institution == 'true' %} <span class="impactful-inst-tag">Impactful Institution</span>{% endif %}</div>
+    <div class="paper-authors">{{ p.authors | highlight_authors }}{% for inst in p.authors | paper_institution_names %} <span class="impactful-inst-tag">{{ inst }}</span>{% endfor %}</div>
     {% endif %}
 
     <div class="paper-meta">
