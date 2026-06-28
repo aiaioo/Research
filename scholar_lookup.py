@@ -17,7 +17,8 @@ import time
 from datetime import datetime
 from pathlib import Path
 
-from playwright.async_api import async_playwright, TimeoutError as PWTimeout
+from tenacity import AsyncRetrying, stop_after_attempt, wait_exponential, retry_if_exception_type
+from playwright.async_api import async_playwright, TimeoutError as PWTimeout, Error as PWError
 
 PEOPLE_DIR = Path(__file__).parent / "people"
 _YYYYMM = datetime.now().strftime("%Y%m")
@@ -70,10 +71,19 @@ async def search_author(page, name: str) -> dict | None:
     url = SEARCH_URL.format(query=query)
 
     try:
-        await page.goto(url, wait_until="domcontentloaded", timeout=30_000)
+        async for attempt in AsyncRetrying(
+            retry=retry_if_exception_type((PWTimeout, PWError)),
+            stop=stop_after_attempt(3),
+            wait=wait_exponential(multiplier=2, min=30, max=120),
+            reraise=True,
+        ):
+            with attempt:
+                if attempt.retry_state.attempt_number > 1:
+                    print(f"  [retry {attempt.retry_state.attempt_number}/3] {name}")
+                await page.goto(url, wait_until="domcontentloaded", timeout=30_000)
         await page.wait_for_timeout(2_000)   # let JS settle
-    except PWTimeout:
-        print(f"  [timeout] {name}")
+    except (PWTimeout, PWError) as exc:
+        print(f"  [failed after retries] {name}: {exc}")
         return None
 
     # Detect CAPTCHA / unusual traffic page

@@ -146,26 +146,56 @@ def main() -> None:
                     stats[name]["total"] += 1
                     stats[name]["categories"][category] += 1
 
+    # Load existing file so we can update in-place rather than overwrite
+    existing_rows: dict[str, dict[str, str]] = {}
+    existing_fieldnames: list[str] = []
+    if OUTPUT_FILE.exists():
+        with open(OUTPUT_FILE, encoding="utf-8", newline="") as fh:
+            reader = csv.DictReader(fh, delimiter="\t")
+            existing_fieldnames = list(reader.fieldnames or [])
+            for row in reader:
+                author = (row.get("author") or "").strip()
+                if author:
+                    existing_rows[author] = dict(row)
+
+    # Determine output columns: start from what the script knows, then append
+    # any extra columns that were already present (e.g. scholar_url, affiliation)
+    base_cols = ["author", "total"] + CATEGORIES
+    extra_cols = [c for c in existing_fieldnames if c not in base_cols]
+    fieldnames = base_cols + extra_cols
+
+    # Merge computed stats into existing rows; add rows for brand-new authors
+    for name, data in stats.items():
+        if name in existing_rows:
+            existing_rows[name]["total"] = str(data["total"])
+            for cat in CATEGORIES:
+                existing_rows[name][cat] = str(data["categories"].get(cat, 0))
+        else:
+            new_row: dict[str, str] = {"author": name, "total": str(data["total"])}
+            for cat in CATEGORIES:
+                new_row[cat] = str(data["categories"].get(cat, 0))
+            for col in extra_cols:
+                new_row[col] = ""
+            existing_rows[name] = new_row
+
     # Sort by total descending, then alphabetically for ties
     sorted_authors = sorted(
-        stats.items(), key=lambda kv: (-kv[1]["total"], kv[0])
+        existing_rows.items(),
+        key=lambda kv: (-int(kv[1].get("total", 0) or 0), kv[0]),
     )
 
     PEOPLE_DIR.mkdir(parents=True, exist_ok=True)
     with open(OUTPUT_FILE, "w", encoding="utf-8", newline="") as fh:
-        writer = csv.writer(fh, delimiter="\t")
-        writer.writerow(["author", "total"] + CATEGORIES)
-        for name, data in sorted_authors:
-            row = [name, data["total"]] + [
-                data["categories"].get(cat, 0) for cat in CATEGORIES
-            ]
+        writer = csv.DictWriter(fh, fieldnames=fieldnames, delimiter="\t", extrasaction="ignore")
+        writer.writeheader()
+        for _name, row in sorted_authors:
             writer.writerow(row)
 
-    print(f"Wrote {len(sorted_authors)} authors → {OUTPUT_FILE}")
+    print(f"Wrote {len(sorted_authors)} authors → {OUTPUT_FILE} ({len(stats)} from scan, {len(sorted_authors) - len(stats)} carried over)")
     if sorted_authors:
         print("\nTop 10 authors:")
-        for name, data in sorted_authors[:10]:
-            print(f"  {data['total']:3d}  {name}")
+        for name, row in sorted_authors[:10]:
+            print(f"  {int(row.get('total', 0)):3d}  {name}")
 
 
 if __name__ == "__main__":

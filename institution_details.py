@@ -24,7 +24,7 @@ from playwright.async_api import async_playwright, TimeoutError as PWTimeout
 
 PEOPLE_DIR   = Path(__file__).parent / "people"
 DETAILS_FILE = PEOPLE_DIR / "INSTITUTION_DETAILS.tsv"
-FIELDNAMES   = ["institution", "canonical_name", "institution_url"]
+FIELDNAMES   = ["institution", "canonical_name", "institution_url", "country"]
 
 MIN_DELAY = 20   # seconds
 MAX_DELAY = 60   # seconds
@@ -66,10 +66,68 @@ def load_details() -> dict[str, dict]:
 def write_details(details: dict[str, dict]) -> None:
     with DETAILS_FILE.open("w", newline="", encoding="utf-8") as f:
         writer = csv.DictWriter(f, fieldnames=FIELDNAMES, delimiter="\t",
-                                extrasaction="ignore")
+                                extrasaction="ignore", restval="")
         writer.writeheader()
         for row in details.values():
             writer.writerow(row)
+
+
+# TLD → country fallback (used when infobox has no country data)
+_TLD_COUNTRY: dict[str, str] = {
+    "ac.uk": "United Kingdom", "co.uk": "United Kingdom", "uk": "United Kingdom",
+    "edu": "United States", "gov": "United States", "us": "United States",
+    "ca": "Canada", "au": "Australia", "nz": "New Zealand",
+    "de": "Germany", "fr": "France", "it": "Italy", "es": "Spain",
+    "nl": "Netherlands", "be": "Belgium", "ch": "Switzerland", "at": "Austria",
+    "se": "Sweden", "no": "Norway", "dk": "Denmark", "fi": "Finland",
+    "pl": "Poland", "cz": "Czech Republic", "hu": "Hungary", "ro": "Romania",
+    "pt": "Portugal", "gr": "Greece", "ru": "Russia", "ua": "Ukraine",
+    "jp": "Japan", "cn": "China", "kr": "South Korea", "in": "India",
+    "sg": "Singapore", "hk": "Hong Kong", "tw": "Taiwan", "my": "Malaysia",
+    "br": "Brazil", "mx": "Mexico", "ar": "Argentina", "cl": "Chile",
+    "za": "South Africa", "eg": "Egypt", "ng": "Nigeria", "ke": "Kenya",
+    "il": "Israel", "sa": "Saudi Arabia", "ae": "United Arab Emirates",
+    "tr": "Turkey", "ir": "Iran", "pk": "Pakistan", "bd": "Bangladesh",
+}
+
+_COUNTRY_KEYWORDS = {"country", "nation", "location", "headquarters", "based in"}
+
+
+async def _extract_country(page, institution_url: str) -> str:
+    """Try DDG infobox rows first; fall back to URL TLD."""
+    country = ""
+
+    # DDG infobox: key-value table rows
+    for sel in [
+        "[data-testid='about-result'] tr",
+        ".zci__result tr",
+        ".ia-modules tr",
+        ".c-base__title",            # sometimes wraps entity cards
+    ]:
+        rows = await page.query_selector_all(sel)
+        for row in rows:
+            text = (await row.inner_text()).lower()
+            if any(kw in text for kw in _COUNTRY_KEYWORDS):
+                cells = await row.query_selector_all("td")
+                if len(cells) >= 2:
+                    val = (await cells[-1].inner_text()).strip()
+                    if val:
+                        country = val
+                        break
+        if country:
+            break
+
+    # Fallback: infer from URL TLD
+    if not country and institution_url:
+        from urllib.parse import urlparse
+        host = urlparse(institution_url).netloc.lower().lstrip("www.")
+        # Check two-part TLDs first (e.g. ac.uk)
+        parts = host.split(".")
+        two = ".".join(parts[-2:]) if len(parts) >= 2 else ""
+        one = parts[-1] if parts else ""
+        country = _TLD_COUNTRY.get(two) or _TLD_COUNTRY.get(one, "")
+
+    return country
 
 
 # ── Google search ─────────────────────────────────────────────────────────────
@@ -134,10 +192,14 @@ async def search_institution(page, name: str) -> dict:
                 institution_url = href
                 break
 
+    # ── 3. Country from infobox ───────────────────────────────────────────────
+    country = await _extract_country(page, institution_url)
+
     return {
-        "institution":    name,
-        "canonical_name": canonical_name,
+        "institution":     name,
+        "canonical_name":  canonical_name,
         "institution_url": institution_url,
+        "country":         country,
     }
 
 
@@ -185,6 +247,7 @@ async def main():
             if result["institution_url"]:
                 print(f"  canonical : {result['canonical_name']}")
                 print(f"  url       : {result['institution_url']}")
+                print(f"  country   : {result['country'] or '(not found)'}")
             else:
                 print(f"  → not found")
 

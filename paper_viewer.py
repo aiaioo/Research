@@ -20,7 +20,7 @@ ROOT       = Path(__file__).parent
 PAPERS_DIR = ROOT / "papers"
 
 CATEGORIES = ["vision", "training", "models", "memory", "safety", "voice"]
-ALL_TABS   = sorted(CATEGORIES) + ["others"]
+ALL_TABS   = ["all"] + sorted(CATEGORIES) + ["others"]
 PAGE_SIZE  = 100
 
 USER_FIELDS = {"viewed", "read", "bookmarked", "labelled", "category"}
@@ -968,6 +968,7 @@ def index():
     papers = load_papers()
     groups = group_by_tab(papers)
     counts = {t: len(groups.get(t, [])) for t in ALL_TABS}
+    counts["all"] = len(papers)
 
     # Filter state — always computed so template variables are always defined
     show_viewed               = request.args.get("show_viewed",               "") == "1"
@@ -1015,7 +1016,7 @@ def index():
         except (ValueError, TypeError):
             page = 1
 
-        tab_papers = groups.get(tab, [])
+        tab_papers = papers if tab == "all" else groups.get(tab, [])
         if not is_search_mode:
             if show_viewed or show_read or show_bookmarked or show_labelled or show_impactful_researcher or show_impactful_institution:
                 tab_papers = [
