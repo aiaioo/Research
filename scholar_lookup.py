@@ -1,0 +1,261 @@
+"""
+scholar_lookup.py
+
+For the top N researchers in RESEARCHERS_FREQUENCY.tsv, searches Google Scholar
+for their author profile, then extracts: scholar_url, affiliation, citations.
+Saves progress incrementally so it can resume after interruption.
+
+Rate limiting: random delay of 15–30 s between Scholar requests.
+"""
+
+import asyncio
+import csv
+import json
+import os
+import random
+import re
+import sys
+import time
+from pathlib import Path
+
+from playwright.async_api import async_playwright, TimeoutError as PWTimeout
+
+PEOPLE_DIR = Path(__file__).parent / "people"
+TSV_IN = PEOPLE_DIR / "RESEARCHERS_FREQUENCY.tsv"
+PROGRESS_FILE = PEOPLE_DIR / ".scholar_lookup_progress.json"
+
+TOP_N = 400
+MIN_DELAY = 15   # seconds
+MAX_DELAY = 30   # seconds
+
+# ── helpers ─────────────────────────────────────────────────────────────────
+
+def load_progress() -> dict:
+    if PROGRESS_FILE.exists():
+        return json.loads(PROGRESS_FILE.read_text())
+    return {}
+
+
+def save_progress(data: dict) -> None:
+    PROGRESS_FILE.write_text(json.dumps(data, indent=2))
+
+
+def load_tsv() -> tuple[list[str], list[dict]]:
+    rows = []
+    with open(TSV_IN, encoding="utf-8", newline="") as fh:
+        reader = csv.DictReader(fh, delimiter="\t")
+        fieldnames = reader.fieldnames or []
+        for row in reader:
+            rows.append(dict(row))
+    return list(fieldnames), rows
+
+
+def write_tsv(fieldnames: list[str], rows: list[dict]) -> None:
+    with open(TSV_IN, "w", encoding="utf-8", newline="") as fh:
+        writer = csv.DictWriter(fh, fieldnames=fieldnames, delimiter="\t",
+                                extrasaction="ignore")
+        writer.writeheader()
+        writer.writerows(rows)
+
+
+def fmt_citations(text: str) -> str:
+    """Strip non-numeric characters and return plain integer string."""
+    digits = re.sub(r"[^\d]", "", text)
+    return digits if digits else ""
+
+
+# ── Scholar scraping ─────────────────────────────────────────────────────────
+
+SEARCH_URL = (
+    "https://scholar.google.com/citations"
+    "?view_op=search_authors&mauthors={query}&hl=en"
+)
+
+
+async def search_author(page, name: str) -> dict | None:
+    """
+    Search Scholar for `name` and return the best-matching profile dict,
+    or None if nothing found.
+    """
+    query = name.replace(" ", "+")
+    url = SEARCH_URL.format(query=query)
+
+    try:
+        await page.goto(url, wait_until="domcontentloaded", timeout=30_000)
+        await page.wait_for_timeout(2_000)   # let JS settle
+    except PWTimeout:
+        print(f"  [timeout] {name}")
+        return None
+
+    # Detect CAPTCHA / unusual traffic page
+    content = await page.content()
+    if "unusual traffic" in content.lower() or "captcha" in content.lower():
+        print(f"  [captcha] {name} — pausing 120 s")
+        await asyncio.sleep(120)
+        # retry once
+        try:
+            await page.goto(url, wait_until="domcontentloaded", timeout=30_000)
+            await page.wait_for_timeout(2_000)
+            content = await page.content()
+        except PWTimeout:
+            return None
+        if "unusual traffic" in content.lower():
+            print("  [captcha again] giving up on this author")
+            return None
+
+    # Each profile card: div.gs_ai_chpr
+    cards = await page.query_selector_all("div.gs_ai_chpr")
+    if not cards:
+        # Try alternative selector
+        cards = await page.query_selector_all(".gsc_1usr")
+
+    if not cards:
+        return None
+
+    # Score each card by name similarity; pick the best match
+    name_parts = name.lower().split()
+    best_score = -1
+    best_result = None
+
+    for card in cards:
+        try:
+            # Name / link
+            link_el = await card.query_selector("h3.gs_ai_name a, a.gs_ai_name")
+            if not link_el:
+                link_el = await card.query_selector("a")
+            if not link_el:
+                continue
+
+            card_name = (await link_el.inner_text()).strip()
+            href = await link_el.get_attribute("href") or ""
+
+            # Affiliation
+            aff_el = await card.query_selector(".gs_ai_aff, .gsc_1usr_aff")
+            affiliation = (await aff_el.inner_text()).strip() if aff_el else ""
+
+            # Citations (shows "Cited by N")
+            cit_el = await card.query_selector(".gs_ai_cby, .gsc_1usr_cby")
+            citations_raw = (await cit_el.inner_text()).strip() if cit_el else ""
+            citations = fmt_citations(citations_raw)
+
+            # Build absolute Scholar URL
+            if href.startswith("/"):
+                scholar_url = "https://scholar.google.com" + href
+            elif href.startswith("http"):
+                scholar_url = href
+            else:
+                continue
+
+            # Keep only citations URLs that have a user= parameter
+            if "citations?" not in scholar_url or "user=" not in scholar_url:
+                continue
+
+            # Simple match score: how many name tokens appear in card_name
+            card_lower = card_name.lower()
+            score = sum(1 for part in name_parts if part in card_lower)
+
+            if score > best_score:
+                best_score = score
+                best_result = {
+                    "scholar_name": card_name,
+                    "scholar_url": scholar_url,
+                    "affiliation": affiliation,
+                    "citations": citations,
+                }
+        except Exception:
+            continue
+
+    # Require at least last-name match
+    if best_score >= 1 and best_result:
+        return best_result
+    return None
+
+
+# ── main ─────────────────────────────────────────────────────────────────────
+
+async def main():
+    fieldnames, rows = load_tsv()
+
+    # Ensure new columns exist
+    new_cols = ["scholar_url", "affiliation", "citations"]
+    for col in new_cols:
+        if col not in fieldnames:
+            fieldnames.append(col)
+            for row in rows:
+                row.setdefault(col, "")
+
+    top_rows = rows[:TOP_N]
+    progress = load_progress()
+
+    def needs_lookup(row: dict) -> bool:
+        p = progress.get(row["author"])
+        return not row.get("scholar_url") and p in (None, "not_found")
+
+    # Count how many still need lookup (retry "not_found" entries from prior run)
+    todo = [r for r in top_rows if needs_lookup(r)]
+    done_count = TOP_N - len(todo)
+    print(f"Resuming: {done_count}/{TOP_N} already done, {len(todo)} remaining")
+
+    async with async_playwright() as pw:
+        # Use the real system Chrome (not the "Google Chrome for Testing" binary)
+        # so no "Test" badge appears and the user can stay logged into Google.
+        browser = await pw.chromium.launch(
+            channel="chrome",
+            headless=False,
+            args=["--disable-blink-features=AutomationControlled"],
+        )
+        context = await browser.new_context(
+            locale="en-US",
+            viewport={"width": 1280, "height": 800},
+        )
+        await context.add_init_script(
+            "Object.defineProperty(navigator,'webdriver',{get:()=>undefined});"
+        )
+        page = await context.new_page()
+
+        for i, row in enumerate(top_rows):
+            name = row["author"]
+
+            # Skip if already resolved (but retry "not_found" from prior run)
+            if not needs_lookup(row):
+                if name not in progress:
+                    progress[name] = "skipped_already_set"
+                continue
+
+            print(f"[{done_count + 1}/{TOP_N}] Searching: {name}")
+            result = await search_author(page, name)
+
+            if result:
+                row["scholar_url"] = result["scholar_url"]
+                row["affiliation"] = result["affiliation"]
+                row["citations"] = result["citations"]
+                progress[name] = result["scholar_url"]
+                print(f"  → {result['scholar_url']}")
+                print(f"     {result['affiliation']} | cited {result['citations']}")
+            else:
+                row["scholar_url"] = ""
+                row["affiliation"] = ""
+                row["citations"] = ""
+                progress[name] = "not_found"
+                print(f"  → not found")
+
+            done_count += 1
+
+            # Save progress after every researcher
+            save_progress(progress)
+            write_tsv(fieldnames, rows)
+
+            # Rate-limit: skip delay after the very last entry
+            remaining = [r for r in top_rows[i + 1:] if not progress.get(r["author"])]
+            if remaining:
+                delay = random.uniform(MIN_DELAY, MAX_DELAY)
+                print(f"  waiting {delay:.1f} s …")
+                await asyncio.sleep(delay)
+
+        await browser.close()
+
+    print(f"\nDone. Results written to {TSV_IN}")
+
+
+if __name__ == "__main__":
+    asyncio.run(main())
