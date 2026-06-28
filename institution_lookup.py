@@ -1,12 +1,14 @@
 import os
 import csv
 import json
+from datetime import datetime
 from pathlib import Path
 import re
 from operator import itemgetter
 
 PEOPLE_DIR = Path(__file__).parent / "people"
-TSV_IN = PEOPLE_DIR / "RESEARCHERS_FREQUENCY.tsv"
+_YYYYMM = datetime.now().strftime("%Y%m")
+TSV_IN = PEOPLE_DIR / f"RESEARCHERS_FREQUENCY_{_YYYYMM}.tsv"
 PROGRESS_FILE = PEOPLE_DIR / ".scholar_lookup_progress.json"
 
 TOP_N = 400
@@ -106,9 +108,10 @@ if __name__ == "__main__":
     #print(column_names)
     #test_prefix_removal()
     institution_dict, ordered_keys = _count_institutions(rows)
-    TARGET_FILE = 'people/INSTITUTIONS_FREQUENCY.csv'
+    TARGET_FILE = f'people/INSTITUTIONS_FREQUENCY_{_YYYYMM}.tsv'
     with open(TARGET_FILE, 'w', encoding="utf-8") as fout:
+        fout.write('institution' + "\t" + 'citations' + "\n")
         for key in ordered_keys:
-            fout.write(key[0] + "\t" + str(institution_dict[key[0]]))
+            fout.write(key[0] + "\t" + str(institution_dict[key[0]]) + "\n")
         fout.flush()
     print("" + str(len(ordered_keys)) + " rows written to " + TARGET_FILE)

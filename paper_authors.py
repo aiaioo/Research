@@ -10,11 +10,13 @@ import csv
 import re
 import unicodedata
 from collections import defaultdict
+from datetime import datetime
 from pathlib import Path
 
 PAPERS_DIR = Path(__file__).parent / "papers"
 PEOPLE_DIR = Path(__file__).parent / "people"
-OUTPUT_FILE = PEOPLE_DIR / "RESEARCHERS_FREQUENCY.tsv"
+_YYYYMM = datetime.now().strftime("%Y%m")
+OUTPUT_FILE = PEOPLE_DIR / f"RESEARCHERS_FREQUENCY_{_YYYYMM}.tsv"
 
 # Canonical category order for output columns
 CATEGORIES = ["models", "training", "safety", "memory", "vision", "voice", "other"]

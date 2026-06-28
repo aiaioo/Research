@@ -39,6 +39,7 @@ except ImportError:
         "date_seen", "source_name", "source_url", "paper_url", "title",
         "authors", "abstract", "keywords", "pub_date", "place",
         "viewed", "read", "bookmarked", "labelled", "category",
+        "impactful_researcher", "impactful_institution",
     ]
 
 try:

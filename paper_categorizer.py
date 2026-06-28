@@ -29,6 +29,7 @@ from pathlib import Path
 
 ROOT       = Path(__file__).parent
 PAPERS_DIR = ROOT / "papers"
+PEOPLE_DIR = ROOT / "people"
 
 # Priority order: ties broken by earliest position in this list.
 CATEGORIES = [
@@ -322,6 +323,88 @@ ARXIV_BONUS: dict[str, dict[str, int]] = {
 }
 
 
+# ── Impactful researchers / institutions ──────────────────────────────────────
+
+def _latest_tsv(glob_pattern: str) -> Path | None:
+    matches = sorted(PEOPLE_DIR.glob(glob_pattern))
+    return matches[-1] if matches else None
+
+
+def _normalize_author_name(name: str) -> str:
+    """Convert 'Last, First [Middle]' to 'First [Middle] Last'; leave 'First Last' unchanged."""
+    name = name.strip()
+    if "," in name:
+        last, _, first = name.partition(",")
+        return f"{first.strip()} {last.strip()}"
+    return name
+
+
+def load_impactful_researchers(min_citations: int = 10_000) -> dict[str, dict]:
+    """Return a dict of author name → row for researchers with citations > min_citations."""
+    path = _latest_tsv("RESEARCHERS_FREQUENCY_*.tsv")
+    if not path:
+        return {}
+    result: dict[str, dict] = {}
+    with path.open(newline="", encoding="utf-8") as f:
+        for row in csv.DictReader(f, delimiter="\t"):
+            try:
+                if int(row.get("citations") or 0) > min_citations:
+                    result[row["author"]] = row
+            except ValueError:
+                pass
+    return result
+
+
+def load_impactful_institutions(min_citations: int = 50_000) -> set[str]:
+    """Return a set of institution names with citations > min_citations."""
+    path = _latest_tsv("INSTITUTIONS_FREQUENCY_*.tsv")
+    if not path:
+        return set()
+    institutions: set[str] = set()
+    with path.open(newline="", encoding="utf-8") as f:
+        reader = csv.reader(f, delimiter="\t")
+        next(reader, None)  # skip header row
+        for row in reader:
+            if len(row) < 2:
+                continue
+            try:
+                if int(row[1]) > min_citations:
+                    institutions.add(row[0].strip())
+            except ValueError:
+                pass
+    return institutions
+
+
+def match_impactful_researchers(row: dict, impactful_researchers: dict[str, dict]) -> bool:
+    """Return True if any author in the paper row is in impactful_researchers."""
+    authors_str = row.get("authors", "")
+    if not authors_str:
+        return False
+    return any(
+        _normalize_author_name(raw) in impactful_researchers
+        for raw in authors_str.split(",")
+    )
+
+
+def match_impactful_institutions(
+    row: dict,
+    impactful_researchers: dict[str, dict],
+    impactful_institutions: set[str],
+) -> bool:
+    """Return True if any impactful author's affiliation names an impactful institution."""
+    authors_str = row.get("authors", "")
+    if not authors_str or not impactful_institutions:
+        return False
+    for raw in authors_str.split(","):
+        researcher = impactful_researchers.get(_normalize_author_name(raw))
+        if not researcher:
+            continue
+        affiliation = researcher.get("affiliation", "").lower()
+        if any(inst.lower() in affiliation for inst in impactful_institutions):
+            return True
+    return False
+
+
 # ── Scoring ────────────────────────────────────────────────────────────────────
 
 def _match(phrase: str, text: str) -> bool:
@@ -389,11 +472,18 @@ def classify(title: str, abstract: str, keywords: str = "") -> str:
 
 # ── File processing ────────────────────────────────────────────────────────────
 
-def process_file(path: Path, dry_run: bool, reclassify: bool) -> tuple[int, int, Counter]:
+def process_file(
+    path: Path,
+    dry_run: bool,
+    reclassify: bool,
+    impactful_researchers: dict[str, dict],
+    impactful_institutions: set[str],
+) -> tuple[int, int, Counter]:
     """
-    Classify uncategorized papers in one TSV file.
-    Returns (papers_found, papers_classified, category_counter).
-    Adds a 'category' column if the file doesn't have one.
+    Classify uncategorized papers in one TSV file and update impactful flags for
+    all rows.  Returns (papers_found, papers_classified, category_counter).
+    Adds 'category', 'impactful_researcher', and 'impactful_institution' columns
+    if the file doesn't have them.
     """
     with path.open(newline="", encoding="utf-8") as f:
         reader = csv.DictReader(f, delimiter="\t")
@@ -403,10 +493,11 @@ def process_file(path: Path, dry_run: bool, reclassify: bool) -> tuple[int, int,
     if not rows:
         return 0, 0, Counter()
 
-    if "category" not in fieldnames:
-        fieldnames.append("category")
-        for row in rows:
-            row.setdefault("category", "")
+    for col in ("category", "impactful_researcher", "impactful_institution"):
+        if col not in fieldnames:
+            fieldnames.append(col)
+            for row in rows:
+                row.setdefault(col, "")
 
     if reclassify:
         candidates = [
@@ -421,10 +512,24 @@ def process_file(path: Path, dry_run: bool, reclassify: bool) -> tuple[int, int,
             and row.get("title")
         ]
 
-    if not candidates:
+    # Update impactful flags for every row that has author data.
+    flag_updates = 0
+    if impactful_researchers:
+        for row in rows:
+            if not row.get("authors"):
+                continue
+            new_ir = "true" if match_impactful_researchers(row, impactful_researchers) else ""
+            new_ii = "true" if match_impactful_institutions(row, impactful_researchers, impactful_institutions) else ""
+            if row.get("impactful_researcher") != new_ir or row.get("impactful_institution") != new_ii:
+                row["impactful_researcher"] = new_ir
+                row["impactful_institution"] = new_ii
+                flag_updates += 1
+
+    if not candidates and not flag_updates:
         return 0, 0, Counter()
 
-    print(f"  {path.name}: {len(candidates)} paper(s) to classify")
+    if candidates:
+        print(f"  {path.name}: {len(candidates)} paper(s) to classify")
 
     cat_counts: Counter = Counter()
     for i, row in candidates:
@@ -505,13 +610,19 @@ def main() -> None:
         print("No TSV files found.", file=sys.stderr)
         sys.exit(1)
 
+    impactful_researchers = load_impactful_researchers()
+    impactful_institutions = load_impactful_institutions()
+
     total_found = total_classified = 0
     total_cats: Counter = Counter()
     for path in paths:
         if not path.exists():
             print(f"  [!] {path}: not found", file=sys.stderr)
             continue
-        found, classified, cats = process_file(path, args.dry_run, args.reclassify)
+        found, classified, cats = process_file(
+            path, args.dry_run, args.reclassify,
+            impactful_researchers, impactful_institutions,
+        )
         total_found      += found
         total_classified += classified
         total_cats       += cats

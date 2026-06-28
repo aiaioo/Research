@@ -3,42 +3,31 @@ scholar_lookup.py
 
 For the top N researchers in RESEARCHERS_FREQUENCY.tsv, searches Google Scholar
 for their author profile, then extracts: scholar_url, affiliation, citations.
-Saves progress incrementally so it can resume after interruption.
+Skips rows that already have a scholar_url. Writes the TSV after each lookup.
 
 Rate limiting: random delay of 15–30 s between Scholar requests.
 """
 
 import asyncio
 import csv
-import json
-import os
 import random
 import re
 import sys
 import time
+from datetime import datetime
 from pathlib import Path
 
 from playwright.async_api import async_playwright, TimeoutError as PWTimeout
 
 PEOPLE_DIR = Path(__file__).parent / "people"
-TSV_IN = PEOPLE_DIR / "RESEARCHERS_FREQUENCY.tsv"
-PROGRESS_FILE = PEOPLE_DIR / ".scholar_lookup_progress.json"
+_YYYYMM = datetime.now().strftime("%Y%m")
+TSV_IN = PEOPLE_DIR / f"RESEARCHERS_FREQUENCY_{_YYYYMM}.tsv"
 
-TOP_N = 400
+TOP_N = 10460
 MIN_DELAY = 15   # seconds
 MAX_DELAY = 30   # seconds
 
 # ── helpers ─────────────────────────────────────────────────────────────────
-
-def load_progress() -> dict:
-    if PROGRESS_FILE.exists():
-        return json.loads(PROGRESS_FILE.read_text())
-    return {}
-
-
-def save_progress(data: dict) -> None:
-    PROGRESS_FILE.write_text(json.dumps(data, indent=2))
-
 
 def load_tsv() -> tuple[list[str], list[dict]]:
     rows = []
@@ -185,13 +174,10 @@ async def main():
                 row.setdefault(col, "")
 
     top_rows = rows[:TOP_N]
-    progress = load_progress()
 
     def needs_lookup(row: dict) -> bool:
-        p = progress.get(row["author"])
-        return not row.get("scholar_url") and p in (None, "not_found")
+        return not row.get("scholar_url")
 
-    # Count how many still need lookup (retry "not_found" entries from prior run)
     todo = [r for r in top_rows if needs_lookup(r)]
     done_count = TOP_N - len(todo)
     print(f"Resuming: {done_count}/{TOP_N} already done, {len(todo)} remaining")
@@ -216,10 +202,7 @@ async def main():
         for i, row in enumerate(top_rows):
             name = row["author"]
 
-            # Skip if already resolved (but retry "not_found" from prior run)
             if not needs_lookup(row):
-                if name not in progress:
-                    progress[name] = "skipped_already_set"
                 continue
 
             print(f"[{done_count + 1}/{TOP_N}] Searching: {name}")
@@ -229,24 +212,19 @@ async def main():
                 row["scholar_url"] = result["scholar_url"]
                 row["affiliation"] = result["affiliation"]
                 row["citations"] = result["citations"]
-                progress[name] = result["scholar_url"]
                 print(f"  → {result['scholar_url']}")
                 print(f"     {result['affiliation']} | cited {result['citations']}")
             else:
                 row["scholar_url"] = ""
                 row["affiliation"] = ""
                 row["citations"] = ""
-                progress[name] = "not_found"
                 print(f"  → not found")
 
             done_count += 1
-
-            # Save progress after every researcher
-            save_progress(progress)
             write_tsv(fieldnames, rows)
 
             # Rate-limit: skip delay after the very last entry
-            remaining = [r for r in top_rows[i + 1:] if not progress.get(r["author"])]
+            remaining = [r for r in top_rows[i + 1:] if needs_lookup(r)]
             if remaining:
                 delay = random.uniform(MIN_DELAY, MAX_DELAY)
                 print(f"  waiting {delay:.1f} s …")
