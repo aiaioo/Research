@@ -24,6 +24,7 @@ Run these three scripts once a month after the daily pipeline, in order:
 python paper_authors.py               # 1. count author appearances across tracked papers
 python scholar_lookup.py              # 2. enrich top authors with Scholar profiles + citations
 python institution_lookup.py          # 3. aggregate citation counts by institution
+python institution_details.py         # 4. look up canonical name + URL for each institution
 ```
 
 ### Anytime
@@ -283,12 +284,40 @@ Output: `people/INSTITUTIONS_FREQUENCY_YYYYMM.tsv`
 |--------|-------------|
 | `institution` | Cleaned institution name |
 | `citations` | Sum of Scholar citations for all tracked researchers at this institution |
+| `country` | Country of the institution (filled manually or by future enrichment) |
+| `institution_url` | Official website URL (filled by `institution_details.py`) |
 
 ```bash
 python institution_lookup.py
 ```
 
 > Run after `scholar_lookup.py`.
+
+---
+
+## `institution_details.py`
+
+For each institution in `people/INSTITUTIONS_FREQUENCY_YYYYMM.tsv`, searches
+DuckDuckGo for the institution's canonical name and official website URL.
+Skips institutions already recorded in `INSTITUTION_DETAILS.tsv`. Results are
+written after each lookup so progress is preserved if the run is interrupted.
+
+Rate-limited to a random 20–60 second delay between requests. A browser window
+is opened (non-headless Chrome) so the session appears human.
+
+Output: `people/INSTITUTION_DETAILS.tsv`
+
+| Column | Description |
+|--------|-------------|
+| `institution` | Raw institution name from `INSTITUTIONS_FREQUENCY_*.tsv` |
+| `canonical_name` | Name as returned by the first DuckDuckGo result |
+| `institution_url` | Official website URL |
+
+```bash
+python institution_details.py
+```
+
+> Run after `institution_lookup.py`. May take several hours for a full run (435 institutions × up to 60 s each). Resume safely by re-running — already-resolved institutions are skipped.
 
 ---
 

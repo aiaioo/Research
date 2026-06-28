@@ -109,9 +109,26 @@ if __name__ == "__main__":
     #test_prefix_removal()
     institution_dict, ordered_keys = _count_institutions(rows)
     TARGET_FILE = f'people/INSTITUTIONS_FREQUENCY_{_YYYYMM}.tsv'
+    # Load existing country/url values so they survive a regeneration
+    existing_meta: dict[str, dict] = {}
+    import pathlib as _pathlib, csv as _csv
+    existing_path = _pathlib.Path(TARGET_FILE)
+    if existing_path.exists():
+        with existing_path.open(newline="", encoding="utf-8") as _f:
+            for _row in _csv.DictReader(_f, delimiter="\t"):
+                inst_key = _row.get("institution", "").strip()
+                if inst_key:
+                    existing_meta[inst_key] = {
+                        "country":         _row.get("country", "").strip(),
+                        "institution_url": _row.get("institution_url", "").strip(),
+                    }
     with open(TARGET_FILE, 'w', encoding="utf-8") as fout:
-        fout.write('institution' + "\t" + 'citations' + "\n")
+        fout.write('institution\tcitations\tcountry\tinstitution_url\n')
         for key in ordered_keys:
-            fout.write(key[0] + "\t" + str(institution_dict[key[0]]) + "\n")
+            inst    = key[0]
+            meta    = existing_meta.get(inst, {})
+            country = meta.get("country", "")
+            url     = meta.get("institution_url", "")
+            fout.write(inst + "\t" + str(institution_dict[inst]) + "\t" + country + "\t" + url + "\n")
         fout.flush()
     print("" + str(len(ordered_keys)) + " rows written to " + TARGET_FILE)

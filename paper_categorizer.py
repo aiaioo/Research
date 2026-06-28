@@ -362,15 +362,11 @@ def load_impactful_institutions(min_citations: int = 50_000) -> set[str]:
         return set()
     institutions: set[str] = set()
     with path.open(newline="", encoding="utf-8") as f:
-        reader = csv.reader(f, delimiter="\t")
-        next(reader, None)  # skip header row
-        for row in reader:
-            if len(row) < 2:
-                continue
+        for row in csv.DictReader(f, delimiter="\t"):
             try:
-                if int(row[1]) > min_citations:
-                    institutions.add(row[0].strip())
-            except ValueError:
+                if int(row.get("citations") or 0) > min_citations:
+                    institutions.add(row["institution"].strip())
+            except (ValueError, KeyError):
                 pass
     return institutions
 
