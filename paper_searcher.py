@@ -2095,7 +2095,17 @@ def main() -> None:
                 continue
 
             seen.add(p["paper_url"])
+            # Derive date_seen from arXiv YYMM when year+month match today use
+            # today's date; otherwise fall back to the 1st of that month.
+            date_seen = ""
+            ax_m = ARXIV_RE.search(p["paper_url"])
+            if ax_m:
+                id_parts = re.match(r"(\d{2})(\d{2})\.", ax_m.group(1))
+                if id_parts:
+                    full_ym = f"20{id_parts.group(1)}{id_parts.group(2)}"
+                    date_seen = TODAY if TODAY[:6] == full_ym else f"{full_ym}01"
             new_rows.append({
+                "date_seen":   date_seen,
                 "source_name": name,
                 "source_url":  url,
                 "paper_url":   p["paper_url"],

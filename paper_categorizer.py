@@ -468,6 +468,27 @@ def classify(title: str, abstract: str, keywords: str = "") -> str:
 
 # ── File processing ────────────────────────────────────────────────────────────
 
+_ARXIV_YYMM_RE = re.compile(r"arxiv\.org/(?:abs|pdf)/(\d{2})(\d{2})\.\d+")
+
+
+def _date_seen_from_arxiv(url: str, crawl_date: str, force_day_one: bool) -> str:
+    """Return YYYYMMDD date_seen derived from the arXiv URL's YYMM, or '' if not applicable.
+
+    crawl_date: 8-digit string like '20260627' (from new_papers filename); '' for seen_papers.
+    force_day_one: True for seen_papers — always use the 1st of the month.
+    If not forced and the URL's year+month matches crawl_date, return crawl_date;
+    otherwise return YYYY-MM-01.
+    """
+    m = _ARXIV_YYMM_RE.search(url)
+    if not m:
+        return ""
+    yy, mm = m.group(1), m.group(2)
+    full_ym = f"20{yy}{mm}"
+    if not force_day_one and crawl_date and crawl_date[:6] == full_ym:
+        return crawl_date
+    return f"{full_ym}01"
+
+
 def process_file(
     path: Path,
     dry_run: bool,
@@ -508,6 +529,23 @@ def process_file(
             and row.get("title")
         ]
 
+    # Fill empty date_seen from arXiv URL YYMM.
+    # new_papers_YYYYMMDD.tsv → use crawl date when year+month match; else day 1.
+    # seen_papers_YYYYMM.tsv → always use day 1.
+    crawl_m = re.search(r"new_papers_(\d{8})$", path.stem)
+    crawl_date = crawl_m.group(1) if crawl_m else ""
+    force_day_one = not bool(crawl_m)
+    date_updates = 0
+    if "date_seen" in fieldnames:
+        for row in rows:
+            if not row.get("date_seen"):
+                new_ds = _date_seen_from_arxiv(
+                    row.get("paper_url", ""), crawl_date, force_day_one
+                )
+                if new_ds:
+                    row["date_seen"] = new_ds
+                    date_updates += 1
+
     # Update impactful flags for every row that has author data.
     flag_updates = 0
     if impactful_researchers:
@@ -521,7 +559,7 @@ def process_file(
                 row["impactful_institution"] = new_ii
                 flag_updates += 1
 
-    if not candidates and not flag_updates:
+    if not candidates and not flag_updates and not date_updates:
         return 0, 0, Counter()
 
     if candidates:

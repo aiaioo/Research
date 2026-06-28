@@ -27,6 +27,7 @@ TSV_IN = PEOPLE_DIR / f"RESEARCHERS_FREQUENCY_{_YYYYMM}.tsv"
 TOP_N = 10460
 MIN_DELAY = 15   # seconds
 MAX_DELAY = 30   # seconds
+FAILED_MARKER = "NOT_FOUND"  # sentinel: lookup was attempted but no profile found
 
 # ── helpers ─────────────────────────────────────────────────────────────────
 
@@ -46,6 +47,20 @@ def write_tsv(fieldnames: list[str], rows: list[dict]) -> None:
                                 extrasaction="ignore")
         writer.writeheader()
         writer.writerows(rows)
+
+
+def needs_lookup(row: dict) -> bool:
+    """True only for rows that have never been attempted (blank scholar_url)."""
+    return row.get("scholar_url", "") == ""
+
+
+def find_resume_index(rows: list[dict]) -> int:
+    """Return the index of the row after the last successfully found URL, or 0."""
+    for i in range(len(rows) - 1, -1, -1):
+        url = rows[i].get("scholar_url", "")
+        if url and url != FAILED_MARKER:
+            return i + 1
+    return 0
 
 
 def fmt_citations(text: str) -> str:
@@ -185,12 +200,10 @@ async def main():
 
     top_rows = rows[:TOP_N]
 
-    def needs_lookup(row: dict) -> bool:
-        return not row.get("scholar_url")
-
-    todo = [r for r in top_rows if needs_lookup(r)]
-    done_count = TOP_N - len(todo)
-    print(f"Resuming: {done_count}/{TOP_N} already done, {len(todo)} remaining")
+    start_idx = find_resume_index(top_rows)
+    todo = [r for r in top_rows[start_idx:] if needs_lookup(r)]
+    already_attempted = start_idx + sum(1 for r in top_rows[start_idx:] if not needs_lookup(r))
+    print(f"Resuming from row {start_idx + 1}: {already_attempted} already processed, {len(todo)} remaining")
 
     async with async_playwright() as pw:
         # Use the real system Chrome (not the "Google Chrome for Testing" binary)
@@ -209,13 +222,13 @@ async def main():
         )
         page = await context.new_page()
 
-        for i, row in enumerate(top_rows):
-            name = row["author"]
-
+        lookup_count = 0
+        for i, row in enumerate(top_rows[start_idx:], start=start_idx):
             if not needs_lookup(row):
                 continue
 
-            print(f"[{done_count + 1}/{TOP_N}] Searching: {name}")
+            name = row["author"]
+            print(f"[row {i + 1}/{TOP_N}, lookup #{lookup_count + 1}/{len(todo)}] Searching: {name}")
             result = await search_author(page, name)
 
             if result:
@@ -225,12 +238,12 @@ async def main():
                 print(f"  → {result['scholar_url']}")
                 print(f"     {result['affiliation']} | cited {result['citations']}")
             else:
-                row["scholar_url"] = ""
+                row["scholar_url"] = FAILED_MARKER
                 row["affiliation"] = ""
                 row["citations"] = ""
                 print(f"  → not found")
 
-            done_count += 1
+            lookup_count += 1
             write_tsv(fieldnames, rows)
 
             # Rate-limit: skip delay after the very last entry
