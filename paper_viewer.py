@@ -30,11 +30,13 @@ _cache: list | None = None
 
 try:
     from paper_searcher import (
-        enrich, ARXIV_RE, OPENREVIEW_RE,
+        enrich, enrich_arbitrary_url,
+        ARXIV_RE, OPENREVIEW_RE, ACL_RE, HF_PAPER_RE,
+        arxiv_canonical,
         SEEN_FIELDS, append_seen,
     )
     _LOOKUP_AVAILABLE = True
-except ImportError:
+except Exception:
     _LOOKUP_AVAILABLE = False
     SEEN_FIELDS = [
         "date_seen", "source_name", "source_url", "paper_url", "title",
@@ -206,7 +208,7 @@ def update_paper_field(paper_url: str, updates: dict) -> bool:
                 writer.writerows(rows)
             if _cache is not None:
                 for p in _cache:
-                    if p.get("paper_url") == paper_url:
+                    if (p.get("paper_url") or "").strip() == paper_url:
                         p.update(updates)
                         break
             return True
@@ -241,6 +243,27 @@ _ARXIV_HTML_RE = __import__("re").compile(
 )
 
 
+def _normalise_paper_url(url: str) -> str:
+    """
+    Canonicalise a user-supplied URL to its stable paper identifier URL.
+    Handles arXiv variants, HuggingFace paper pages, OpenReview, and ACL.
+    Unknown URLs are returned unchanged.
+    """
+    m = _ARXIV_HTML_RE.search(url)
+    if m:
+        return arxiv_canonical(m.group(1))
+    m = HF_PAPER_RE.search(url)
+    if m:
+        return arxiv_canonical(m.group(1))
+    m = OPENREVIEW_RE.search(url)
+    if m:
+        return f"https://openreview.net/forum?id={m.group(1)}"
+    m = ACL_RE.search(url)
+    if m:
+        return f"https://aclanthology.org/{m.group(1)}"
+    return url
+
+
 def lookup_or_fetch_paper(raw_url: str) -> tuple | None:
     """Find paper in cache by URL, or fetch+classify+add it. Returns (paper_dict, was_added) or None."""
     if not _LOOKUP_AVAILABLE:
@@ -248,15 +271,7 @@ def lookup_or_fetch_paper(raw_url: str) -> tuple | None:
     url = raw_url.strip()
     if not url.startswith("http"):
         url = "https://" + url
-    paper_url = url
-    # Normalise any arxiv variant (abs / pdf / html) → canonical abs URL
-    m = _ARXIV_HTML_RE.search(url)
-    if m:
-        paper_url = f"https://arxiv.org/abs/{m.group(1)}"
-    else:
-        m2 = OPENREVIEW_RE.search(url)
-        if m2:
-            paper_url = f"https://openreview.net/forum?id={m2.group(1)}"
+    paper_url = _normalise_paper_url(url)
     papers = load_papers()
     for p in papers:
         if p.get("paper_url", "").strip() == paper_url:
@@ -268,6 +283,11 @@ def lookup_or_fetch_paper(raw_url: str) -> tuple | None:
     }
     try:
         p_data = enrich(p_data)
+        # For arbitrary URLs (PDF, unknown HTML) where enrich() didn't fully populate,
+        # explicitly call the arbitrary fetcher (enrich() only calls it as a last resort
+        # for unrecognised hosts — here we surface it for direct search-bar submissions).
+        if not p_data.get("title") and paper_url == url:
+            p_data = enrich_arbitrary_url(p_data)
     except Exception:
         return None
     if not p_data.get("title") and not p_data.get("abstract"):
@@ -636,7 +656,7 @@ TEMPLATE = """\
       <input type="hidden" name="prev_page" id="prev-page-input" value="{{ prev_page }}">
       <div class="search-wrap">
         <input class="search-input" type="text" name="search_url" id="search-input"
-               placeholder="Paste arXiv or OpenReview URL…"
+               placeholder="Paste any paper URL (arXiv, HuggingFace, PDF, OpenReview, ACL…)"
                value="{{ search_url or '' }}"
                autocomplete="off" spellcheck="false">
         {% if is_search_mode %}
@@ -836,15 +856,39 @@ btn.addEventListener('click', () => {
   localStorage.setItem('theme', nowDark ? 'dark' : 'light');
 });
 
+// ── Save toast ─────────────────────────────────────────────────────────────────
+let _toastTimer = null;
+function showToast(msg, isError) {
+  let t = document.getElementById('save-toast');
+  if (!t) {
+    t = document.createElement('div');
+    t.id = 'save-toast';
+    t.style.cssText = 'position:fixed;bottom:1.2rem;right:1.2rem;z-index:9999;'
+      + 'padding:.45rem .9rem;border-radius:6px;font-size:.78rem;font-family:inherit;'
+      + 'box-shadow:0 2px 8px rgba(0,0,0,.22);transition:opacity .25s;pointer-events:none;';
+    document.body.appendChild(t);
+  }
+  t.textContent = msg;
+  t.style.background = isError ? 'var(--danger)' : '#1a7a3e';
+  t.style.color = '#fff';
+  t.style.opacity = '1';
+  clearTimeout(_toastTimer);
+  _toastTimer = setTimeout(() => { t.style.opacity = '0'; }, isError ? 3500 : 1200);
+}
+
 // ── Paper state patches ────────────────────────────────────────────────────────
 function patch(paperUrl, updates) {
-  Object.entries(updates).forEach(([field, value]) => {
-    fetch('/update', {
-      method: 'POST',
-      headers: {'Content-Type': 'application/json'},
-      body: JSON.stringify({paper_url: paperUrl, field, value})
-    });
-  });
+  fetch('/update', {
+    method: 'POST',
+    keepalive: true,
+    headers: {'Content-Type': 'application/json'},
+    body: JSON.stringify({paper_url: paperUrl, updates})
+  })
+  .then(r => r.json())
+  .then(data => {
+    if (!data.ok) showToast('Save failed — paper not found in TSV', true);
+  })
+  .catch(() => showToast('Save failed — server unreachable', true));
 }
 
 document.querySelectorAll('.cat-select').forEach(sel => {
@@ -959,11 +1003,14 @@ def index():
     search_added   = False
 
     if is_search_mode:
-        result = lookup_or_fetch_paper(search_url)
-        if result is None:
-            search_error = f"Could not find or fetch paper for: {search_url}"
+        if not _LOOKUP_AVAILABLE:
+            search_error = "Paper lookup unavailable — restart the server with the venv Python (paper_searcher.py failed to import)"
         else:
-            search_paper, search_added = result
+            result = lookup_or_fetch_paper(search_url)
+            if result is None:
+                search_error = f"Could not find or fetch paper for: {search_url}"
+            else:
+                search_paper, search_added = result
 
     papers = load_papers()
     groups = group_by_tab(papers)
@@ -1063,13 +1110,17 @@ def index():
 def update_paper():
     data      = request.get_json(force=True, silent=True) or {}
     paper_url = (data.get("paper_url") or "").strip()
-    field     = (data.get("field") or "").strip()
-    value     = str(data.get("value", ""))
 
-    if not paper_url or field not in USER_FIELDS:
+    # Accept either a single field/value pair or a batch updates dict
+    raw = data.get("updates") or {}
+    if not raw and "field" in data:
+        raw = {(data.get("field") or "").strip(): str(data.get("value", ""))}
+    updates = {k: str(v) for k, v in raw.items() if k in USER_FIELDS}
+
+    if not paper_url or not updates:
         return jsonify(ok=False, error="invalid params"), 400
 
-    ok = update_paper_field(paper_url, {field: value})
+    ok = update_paper_field(paper_url, updates)
     return jsonify(ok=ok)
 
 

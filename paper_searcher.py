@@ -23,6 +23,8 @@ from datetime import datetime, timezone
 from pathlib import Path
 from urllib.parse import urlparse
 
+import io
+
 import feedparser
 import requests
 from bs4 import BeautifulSoup
@@ -60,10 +62,11 @@ def parse_feed(url: str) -> "feedparser.FeedParserDict":
         return feedparser.parse("")
 
 # ── Paper URL patterns ─────────────────────────────────────────────────────────
-ARXIV_RE      = re.compile(r"arxiv\.org/(?:abs|pdf)/(\d{4}\.\d{4,5})(?:v\d+)?")
-OPENREVIEW_RE = re.compile(r"https?://openreview\.net/(?:forum|pdf)\?id=([\w\-]+)")
-ACL_RE        = re.compile(r"https?://aclanthology\.org/([\w.]+?)(?:\.pdf)?(?:[/?#]|$)")
-PMLR_RE       = re.compile(r"https?://proceedings\.mlr\.press/v\d+/([\w\-]+)\.html")
+ARXIV_RE          = re.compile(r"arxiv\.org/(?:abs|pdf)/(\d{4}\.\d{4,5})(?:v\d+)?")
+OPENREVIEW_RE     = re.compile(r"https?://openreview\.net/(?:forum|pdf)\?id=([\w\-]+)")
+ACL_RE            = re.compile(r"https?://aclanthology\.org/([\w.]+?)(?:\.pdf)?(?:[/?#]|$)")
+PMLR_RE           = re.compile(r"https?://proceedings\.mlr\.press/v\d+/([\w\-]+)\.html")
+HF_PAPER_RE       = re.compile(r"huggingface\.co/papers/(\d{4}\.\d{4,5})")
 
 # ── AI/ML arXiv category filter ────────────────────────────────────────────────
 AI_ML_CATS = frozenset({
@@ -143,10 +146,20 @@ def is_ai_ml(p: dict, source_url: str = "") -> bool:
 
 # ── Seen-paper persistence ─────────────────────────────────────────────────────
 def load_seen() -> set:
-    if not SEEN_FILE.exists():
-        return set()
-    with SEEN_FILE.open(newline="", encoding="utf-8") as f:
-        return {row["paper_url"] for row in csv.DictReader(f, delimiter="\t")}
+    seen: set = set()
+    # Read the canonical seen-papers file and all new_papers snapshots so the
+    # scraper never re-adds a paper that was already discovered (even if it only
+    # landed in a new_papers_* file and wasn't yet merged into seen_papers_*).
+    paths = [SEEN_FILE] + sorted(PAPERS_DIR.glob("new_papers_*.tsv"))
+    for path in paths:
+        if not path.exists():
+            continue
+        with path.open(newline="", encoding="utf-8") as f:
+            for row in csv.DictReader(f, delimiter="\t"):
+                url = row.get("paper_url", "").strip()
+                if url:
+                    seen.add(url)
+    return seen
 
 def append_seen(new_rows: list) -> None:
     PAPERS_DIR.mkdir(exist_ok=True)
@@ -355,12 +368,37 @@ def _parse_openreview_invitation(invitation: str) -> str:
         return f"{m.group(1)} {m.group(2)}"
     return ""
 
+_ACL_PREFIX_VENUE = {
+    "P": "ACL", "N": "NAACL", "D": "EMNLP", "Q": "TACL",
+    "E": "EACL", "L": "LREC", "C": "COLING", "S": "SemEval",
+    "I": "IJCNLP", "K": "CoNLL", "W": "ACL Workshop",
+}
+
 def _acl_venue(paper_id: str) -> str:
-    """Infer venue name from ACL Anthology paper ID. E.g. '2024.acl-long.1' → 'ACL 2024'."""
+    """Infer venue name from ACL Anthology paper ID.
+    New format: '2024.acl-long.1' → 'ACL 2024'
+    Legacy format: 'D19-1275' → 'EMNLP 2019'
+    """
     m = re.match(r"(\d{4})\.([a-z]+)", paper_id.lower())
     if m:
         return f"{m.group(2).split('-')[0].upper()} {m.group(1)}"
+    m = re.match(r"([A-Za-z]+)(\d{2})-", paper_id)
+    if m:
+        venue = _ACL_PREFIX_VENUE.get(m.group(1).upper(), "ACL Anthology")
+        return f"{venue} {2000 + int(m.group(2))}"
     return "ACL Anthology"
+
+
+def _acl_pub_date(paper_id: str) -> str:
+    """Infer publication year from ACL Anthology paper ID."""
+    m = re.match(r"(\d{4})\.", paper_id)
+    if m:
+        return m.group(1)
+    m = re.match(r"[A-Za-z]+(\d{2})-", paper_id)
+    if m:
+        return str(2000 + int(m.group(1)))
+    return ""
+
 
 def enrich(p: dict) -> dict:
     """Fill in missing title/authors and fetch arXiv categories when not already present."""
@@ -389,6 +427,20 @@ def enrich(p: dict) -> dict:
         p["keywords"] = p.get("keywords") or meta.get("keywords", "")
         p["pub_date"] = p.get("pub_date") or meta.get("pub_date", "")
         p["place"]    = p.get("place")    or meta.get("place", "")
+    elif "aclanthology.org" in url and not (p.get("title") and p.get("abstract")):
+        # ACL Anthology pages embed Highwire citation_* meta tags
+        meta = _citation_meta(url)
+        p["title"]   = p.get("title")   or meta.get("title", "")
+        p["authors"] = p.get("authors") or meta.get("authors", "")
+        p["abstract"] = p.get("abstract") or meta.get("abstract", "")
+        p["pub_date"] = p.get("pub_date") or meta.get("pub_date", "")
+        acl_m = ACL_RE.search(url)
+        if not p.get("place"):
+            p["place"] = meta.get("place") or (
+                _acl_venue(acl_m.group(1)) if acl_m else "ACL Anthology"
+            )
+        if not p.get("pub_date") and acl_m:
+            p["pub_date"] = _acl_pub_date(acl_m.group(1))
     elif any(h in url for h in ("proceedings.mlr.press", "ojs.aaai.org", "ijcai.org/proceedings",
                                 "ecva.net/papers")) and not p.get("abstract"):
         # These venues embed citation_* meta tags (and AAAI/PMLR have on-page abstracts)
@@ -406,7 +458,7 @@ def enrich(p: dict) -> dict:
         if id_m:
             p["pub_date"] = f"20{id_m.group(1)}-{id_m.group(2)}"
 
-    # Venue inference from paper URL when not already set
+    # Venue inference from paper URL when not already set (fallback for ACL if branch above missed)
     if not p.get("place") and "aclanthology.org" in url:
         acl_m = ACL_RE.search(url)
         if acl_m:
@@ -420,6 +472,17 @@ def enrich(p: dict) -> dict:
     # Fall back to arXiv categories when no other keywords are available
     if not p.get("keywords") and p.get("categories"):
         p["keywords"] = ", ".join(sorted(p["categories"]))
+
+    # Last resort: fetch and parse the raw PDF or HTML for unrecognized URLs
+    known_hosts = (
+        "arxiv.org", "openreview.net", "aclanthology.org",
+        "proceedings.mlr.press", "ojs.aaai.org", "ijcai.org",
+        "ecva.net", "isca-archive.org", "jmlr.org",
+        "ieeexplore.ieee.org", "link.springer.com",
+        "nature.com", "sciencedirect.com", "distill.pub",
+    )
+    if not p.get("title") and not any(h in url for h in known_hosts):
+        p = enrich_arbitrary_url(p)
 
     return p
 
@@ -446,6 +509,152 @@ def scrape_huggingface(url: str) -> list:
     except Exception as e:
         print(f"    [!] HuggingFace API: {e}", file=sys.stderr)
         return []
+
+def scrape_huggingface_paper(url: str) -> list:
+    """
+    Individual HuggingFace paper page (huggingface.co/papers/YYMM.NNNNN).
+    The path segment is an arXiv ID, so we normalise to the canonical arXiv URL
+    and let enrich() handle metadata.
+    """
+    m = HF_PAPER_RE.search(url)
+    if not m:
+        return []
+    arxiv_id  = m.group(1)
+    paper_url = arxiv_canonical(arxiv_id)
+    return [{"paper_url": paper_url, "title": "", "authors": "", "categories": set()}]
+
+
+def _extract_pdf_meta(content: bytes) -> dict:
+    """
+    Extract title, authors, and abstract from raw PDF bytes using pypdf.
+    Falls back gracefully if pypdf is not installed.
+    """
+    try:
+        import pypdf  # optional dependency
+    except ImportError:
+        return {}
+
+    try:
+        reader = pypdf.PdfReader(io.BytesIO(content))
+
+        # Try document metadata first (often populated in well-formatted papers)
+        info   = reader.metadata or {}
+        title  = (info.get("/Title") or "").strip()
+        author = (info.get("/Author") or "").strip()
+
+        # Extract text from first 3 pages to find abstract heuristically
+        pages_text = ""
+        for page in reader.pages[:3]:
+            pages_text += (page.extract_text() or "") + "\n"
+
+        if not title:
+            # First non-empty line is usually the title
+            lines = [l.strip() for l in pages_text.splitlines() if l.strip()]
+            title = lines[0] if lines else ""
+
+        abstract = ""
+        low = pages_text.lower()
+        for marker in ("abstract\n", "abstract—", "abstract: ", "abstract.\n"):
+            idx = low.find(marker)
+            if idx != -1:
+                start = idx + len(marker)
+                # Cut off at introduction / keywords / 1 Introduction etc.
+                end_markers = ["introduction", "1.", "keywords", "index terms"]
+                end = len(pages_text)
+                for em in end_markers:
+                    ei = low.find(em, start)
+                    if ei != -1:
+                        end = min(end, ei)
+                abstract = pages_text[start:end].strip().replace("\n", " ")
+                break
+
+        return {"title": title, "authors": author, "abstract": abstract}
+    except Exception:
+        return {}
+
+
+def _extract_html_meta(content: str, url: str) -> dict:
+    """
+    Extract paper metadata from an HTML page using, in priority order:
+    citation_* meta tags, OpenGraph tags, and the page <title>.
+    """
+    soup = BeautifulSoup(content, "html.parser")
+
+    def _meta(name):
+        t = soup.find("meta", attrs={"name": name}) or soup.find("meta", attrs={"property": name})
+        return (t.get("content", "").strip() if t else "")
+
+    def _meta_all(name):
+        return [t.get("content", "").strip()
+                for t in soup.find_all("meta", attrs={"name": name})
+                if t.get("content", "").strip()]
+
+    # citation_* (Highwire / Google Scholar tags)
+    title   = _meta("citation_title")
+    authors = ", ".join(_meta_all("citation_author"))
+    pub_date_raw = (_meta_all("citation_publication_date") + [""])[0]
+    pub_date = ""
+    if pub_date_raw:
+        parts    = pub_date_raw.replace("/", "-").split("-")
+        pub_date = "-".join(p.zfill(2) for p in parts[:3])
+    venue = (_meta_all("citation_conference_title")
+             + _meta_all("citation_inbook_title")
+             + _meta_all("citation_journal_title") + [""])[0]
+
+    # OpenGraph / Twitter fallbacks
+    if not title:
+        title = _meta("og:title") or _meta("twitter:title")
+    abstract = _meta("og:description") or _meta("twitter:description") or _meta("description")
+
+    # Generic abstract element
+    if not abstract:
+        for el in soup.find_all(True, class_=lambda c: c and "abstract" in " ".join(c).lower()):
+            text = el.get_text(strip=True)
+            if len(text) > 80:
+                abstract = text
+                break
+
+    # Plain <title> last resort
+    if not title:
+        t = soup.find("title")
+        if t:
+            title = t.get_text(strip=True)
+
+    return {"title": title, "authors": authors, "abstract": abstract,
+            "pub_date": pub_date, "place": venue}
+
+
+def enrich_arbitrary_url(p: dict) -> dict:
+    """
+    For URLs that don't match any known venue pattern, fetch the resource,
+    auto-detect whether it's a PDF or HTML document, and extract
+    title / authors / abstract from its content.
+
+    The paper_url in p is used as-is (not normalised to arXiv etc.).
+    """
+    url = p.get("paper_url", "")
+    if not url:
+        return p
+    try:
+        r = SESSION.get(url, timeout=20, stream=True)
+        r.raise_for_status()
+        content_type = r.headers.get("content-type", "").lower()
+
+        if "pdf" in content_type or url.lower().endswith(".pdf"):
+            content = r.content  # download fully for PDF parsing
+            meta    = _extract_pdf_meta(content)
+        else:
+            # Read as text (HTML / XML / plain-text landing page)
+            r.encoding = r.encoding or "utf-8"
+            meta = _extract_html_meta(r.text, url)
+
+        for field in ("title", "authors", "abstract", "pub_date", "place"):
+            if meta.get(field) and not p.get(field):
+                p[field] = meta[field]
+    except Exception as e:
+        print(f"    [!] enrich_arbitrary_url {url}: {e}", file=sys.stderr)
+    return p
+
 
 def scrape_emergentmind(url: str) -> list:
     """
@@ -1524,6 +1733,7 @@ def dispatch(name: str, url: str) -> list:
     if any(d in host for d in SKIP_HOSTS):
         return scrape_skip(url)
 
+    if HF_PAPER_RE.search(full):                   return scrape_huggingface_paper(url)
     if "huggingface.co/papers" in full:           return scrape_huggingface(url)
     if "emergentmind.com"       in host:           return scrape_emergentmind(url)
     if "scholar-inbox.com"      in host:           return scrape_scholarinbox(url)

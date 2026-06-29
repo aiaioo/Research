@@ -270,6 +270,8 @@ async def main():
         await browser.close()
 
     print(f"\nDone. {done_count} entries written to {DETAILS_FILE}")
+    print("The output of this script is not reliable.  So please clean the output using an LLM with the prompt: 'Please go through the attached TSV file INSTITUTION_DETAILS.tsv row by row.  In each row, check if the canonical name, institutional url and country identified for each institution appear to be correct.  If not, clear the canonical name, institutional url and country details by replacing with empty strings.  Return the cleaned up TSV file as CLEANED_UP_INSTITUTION_DETAILS.tsv.' ")
+
 
 
 if __name__ == "__main__":
