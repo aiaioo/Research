@@ -15,7 +15,7 @@ from datetime import datetime
 from itertools import groupby
 from pathlib import Path
 
-from flask import Flask, jsonify, redirect, render_template_string, request, url_for
+from flask import Flask, jsonify, redirect, render_template_string, request, session, url_for
 from markupsafe import Markup, escape
 
 ROOT       = Path(__file__).parent
@@ -287,8 +287,15 @@ def _normalise_paper_url(url: str) -> str:
     return url
 
 
-def lookup_or_fetch_paper(raw_url: str) -> tuple | None:
-    """Find paper in cache by URL, or fetch+classify+add it. Returns (paper_dict, was_added) or None."""
+def lookup_or_fetch_paper(raw_url: str, persist: bool = True) -> tuple | None:
+    """Find paper in cache by URL, or fetch+classify it.
+
+    Returns (paper_dict, was_added, was_preview_only) or None.
+
+    When persist is False (anonymous, not-logged-in visitors), a paper that
+    isn't already in the library is only fetched for preview and is never
+    written to the TSV store — only a logged-in user's search can save it.
+    """
     if not _LOOKUP_AVAILABLE:
         return None
     url = raw_url.strip()
@@ -298,7 +305,7 @@ def lookup_or_fetch_paper(raw_url: str) -> tuple | None:
     papers = load_papers()
     for p in papers:
         if p.get("paper_url", "").strip() == paper_url:
-            return (p, False)
+            return (p, False, False)
     p_data: dict = {
         "paper_url": paper_url, "title": "", "authors": "",
         "abstract": "", "keywords": "", "pub_date": "", "place": "",
@@ -341,14 +348,16 @@ def lookup_or_fetch_paper(raw_url: str) -> tuple | None:
         "image_url":   p_data.get("image_url", ""),
         "category":    cat,
     })
+    if not persist:
+        return (row, False, True)
     append_seen([row])
     global _cache
     _cache = None
     papers = load_papers()
     for p in papers:
         if p.get("paper_url", "").strip() == paper_url:
-            return (p, True)
-    return (row, True)
+            return (p, True, False)
+    return (row, True, False)
 
 
 # ── HTML template ──────────────────────────────────────────────────────────────
@@ -649,6 +658,14 @@ TEMPLATE = """\
     .delete-btn:hover { color: var(--danger); background: #c0392b14; }
     .delete-btn svg { display: block; }
 
+    /* Read-only state badges shown to signed-out visitors instead of editable controls */
+    .ro-tag {
+      font-size: .7rem; font-weight: 500;
+      color: var(--text-muted); background: var(--filter-bg);
+      border-radius: 4px; padding: .12rem .45rem;
+      white-space: nowrap;
+    }
+
     .abstract-text {
       color: var(--text-sub); line-height: 1.65;
       border-left: 2px solid var(--border);
@@ -715,12 +732,18 @@ TEMPLATE = """\
     </form>
     <div class="spacer"></div>
     <a href="/blog/" class="reload-link">Blog →</a>
+    {% if session.get('blog_logged_in') %}
+    <a href="{{ url_for('blog.logout') }}" class="reload-link">Log out</a>
+    {% else %}
+    <a href="{{ url_for('blog.login') }}" class="reload-link">Sign in</a>
+    {% endif %}
     <button class="theme-btn" id="theme-toggle">☾ Dark</button>
     <a href="/reload" class="reload-link">↺ Reload</a>
   </div>
 
   <!-- Tabs -->
   <div class="tab-bar">
+    <a class="tab-link" href="/blog/">my blogs</a>
     {% for t in tabs %}
     <a class="tab-link {% if t == tab %}active{% endif %}"
        href="?tab={{ t }}&page=1{{ filter_qs }}">
@@ -737,6 +760,7 @@ TEMPLATE = """\
   <div class="search-banner">
     <span>Showing result for <strong>{{ search_url }}</strong></span>
     {% if search_added %}<span class="added-tag">+ added</span>{% endif %}
+    {% if search_preview_only %}<span class="ro-tag">Preview only — log in to save</span>{% endif %}
     <a class="back-link" href="?tab={{ prev_tab }}&page={{ prev_page }}">← Back to list</a>
   </div>
   {% endif %}
@@ -837,6 +861,7 @@ TEMPLATE = """\
         {% endif %}
       </div>
       <div class="paper-controls">
+        {% if session.get('blog_logged_in') %}
         <select class="cat-select" data-url="{{ p.paper_url }}">
           <option value="">— category —</option>
           {% for cat in categories|sort %}
@@ -865,6 +890,13 @@ TEMPLATE = """\
             <path d="M2 4h12M5 4V2.5A.5.5 0 0 1 5.5 2h5a.5.5 0 0 1 .5.5V4M6.5 7v5M9.5 7v5M3 4l.9 9.1A1 1 0 0 0 4.9 14h6.2a1 1 0 0 0 1-.9L13 4" stroke="currentColor" stroke-width="1.4" stroke-linecap="round" stroke-linejoin="round"/>
           </svg>
         </button>
+        {% else %}
+        {% if p.category %}<span class="ro-tag">{{ p.category }}</span>{% endif %}
+        {% if is_viewed %}<span class="ro-tag">Viewed</span>{% endif %}
+        {% if is_read %}<span class="ro-tag">Read</span>{% endif %}
+        {% if is_bookmarked %}<span class="ro-tag">Bookmarked</span>{% endif %}
+        {% if is_important %}<span class="ro-tag">Important</span>{% endif %}
+        {% endif %}
       </div>
     </div>
 
@@ -911,6 +943,8 @@ TEMPLATE = """\
 </div>
 
 <script>
+const LOGGED_IN = {{ 'true' if session.get('blog_logged_in') else 'false' }};
+
 // ── Theme toggle ───────────────────────────────────────────────────────────────
 const html = document.documentElement;
 const btn  = document.getElementById('theme-toggle');
@@ -981,14 +1015,16 @@ document.querySelectorAll('.paper-check-input').forEach(cb => {
   });
 });
 
-document.querySelectorAll('.paper-link').forEach(a => {
-  a.addEventListener('click', function() {
-    patch(this.dataset.url, {viewed: 'true'});
-    this.closest('.card')?.classList.add('is-viewed');
-    const cb = this.closest('.card')?.querySelector('[data-field="viewed"]');
-    if (cb) cb.checked = true;
+if (LOGGED_IN) {
+  document.querySelectorAll('.paper-link').forEach(a => {
+    a.addEventListener('click', function() {
+      patch(this.dataset.url, {viewed: 'true'});
+      this.closest('.card')?.classList.add('is-viewed');
+      const cb = this.closest('.card')?.querySelector('[data-field="viewed"]');
+      if (cb) cb.checked = true;
+    });
   });
-});
+}
 
 // ── Delete ─────────────────────────────────────────────────────────────────────
 document.querySelectorAll('.delete-btn').forEach(delBtn => {
@@ -1073,16 +1109,17 @@ def index():
     search_paper   = None
     search_error   = ""
     search_added   = False
+    search_preview_only = False
 
     if is_search_mode:
         if not _LOOKUP_AVAILABLE:
             search_error = "Paper lookup unavailable — restart the server with the venv Python (paper_searcher.py failed to import)"
         else:
-            result = lookup_or_fetch_paper(search_url)
+            result = lookup_or_fetch_paper(search_url, persist=bool(session.get("blog_logged_in")))
             if result is None:
                 search_error = f"Could not find or fetch paper for: {search_url}"
             else:
-                search_paper, search_added = result
+                search_paper, search_added, search_preview_only = result
 
     papers = load_papers()
     groups = group_by_tab(papers)
@@ -1181,13 +1218,15 @@ def index():
         any_filter=any_filter, filter_qs=filter_qs,
         is_search_mode=is_search_mode,
         search_url=search_url, search_error=search_error,
-        search_added=search_added,
+        search_added=search_added, search_preview_only=search_preview_only,
         prev_tab=prev_tab, prev_page=prev_page,
     )
 
 
 @app.route("/update", methods=["POST"])
 def update_paper():
+    if not session.get("blog_logged_in"):
+        return jsonify(ok=False, error="Log in to change paper state"), 401
     data      = request.get_json(force=True, silent=True) or {}
     paper_url = (data.get("paper_url") or "").strip()
 
@@ -1206,6 +1245,8 @@ def update_paper():
 
 @app.route("/delete", methods=["POST"])
 def delete_paper():
+    if not session.get("blog_logged_in"):
+        return jsonify(ok=False, error="Log in to delete papers"), 401
     data      = request.get_json(force=True, silent=True) or {}
     paper_url = (data.get("paper_url") or "").strip()
     if not paper_url:
