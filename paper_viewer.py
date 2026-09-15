@@ -9,8 +9,10 @@ Usage:
 
 import argparse
 import csv
+import re
 from collections import defaultdict
 from datetime import datetime
+from itertools import groupby
 from pathlib import Path
 
 from flask import Flask, jsonify, redirect, render_template_string, request, url_for
@@ -127,6 +129,27 @@ def highlight_authors_filter(authors_str: str) -> Markup:
 
 # ── Data loading ───────────────────────────────────────────────────────────────
 
+_DATE8_RE = re.compile(r"^\d{8}$")
+
+
+def date_saved_key(p: dict) -> str:
+    """Return the 'date saved' (date_seen) as YYYY-MM-DD, falling back to
+    pub_date, or '' if neither is set/valid. Sorts correctly in ASCII order,
+    and '' sorts last under reverse=True so undated papers land at the bottom.
+    A handful of rows have malformed date_seen values (e.g. '202620260626')
+    from an old data-entry bug — those are treated as unset rather than
+    surfaced as a garbled group header."""
+    ds = (p.get("date_seen") or "").strip()
+    if _DATE8_RE.match(ds):
+        return f"{ds[:4]}-{ds[4:6]}-{ds[6:]}"
+    return (p.get("pub_date") or "").strip()
+
+
+def date_saved_label(p: dict) -> str:
+    """Display label for date_saved_key(p) — used as the group header text."""
+    return date_saved_key(p) or "Unknown date"
+
+
 def load_papers() -> list:
     global _cache
     if _cache is not None:
@@ -143,15 +166,7 @@ def load_papers() -> list:
         except Exception:
             pass
     papers = list(by_url.values())
-
-    def _sort_key(p: dict) -> str:
-        d = (p.get("pub_date") or "").strip()
-        if not d:
-            ds = (p.get("date_seen") or "").strip()
-            d = f"{ds[:4]}-{ds[4:6]}-{ds[6:]}" if len(ds) == 8 else ds
-        return d
-
-    papers.sort(key=_sort_key, reverse=True)
+    papers.sort(key=date_saved_key, reverse=True)
     _cache = papers
     return papers
 
@@ -542,7 +557,14 @@ TEMPLATE = """\
     .result-count strong { color: var(--text-sub); font-weight: 600; }
 
     /* ── Paper cards ──────────────────────────────────────────────────────── */
-    .paper-list { display: flex; flex-direction: column; gap: .45rem; }
+    .date-heading {
+      font-size: .82rem; font-weight: 700; text-transform: uppercase;
+      letter-spacing: .04em; color: var(--text-muted);
+      margin: 1.1rem 0 .45rem; padding-bottom: .25rem;
+      border-bottom: 1px solid var(--border);
+    }
+    .date-heading:first-child { margin-top: 0; }
+    .paper-list { display: flex; flex-direction: column; gap: .45rem; margin-bottom: .3rem; }
 
     .card {
       background: var(--surface);
@@ -758,8 +780,10 @@ TEMPLATE = """\
 
   <!-- Paper list -->
   {% if papers %}
+  {% for date_label, date_papers in date_groups %}
+  <h3 class="date-heading">{{ date_label }}</h3>
   <div class="paper-list">
-  {% for p in papers %}
+  {% for p in date_papers %}
   {% set is_viewed     = p.viewed     == 'true' %}
   {% set is_read       = p['read']    == 'true' %}
   {% set is_bookmarked = p.bookmarked == 'true' %}
@@ -835,6 +859,7 @@ TEMPLATE = """\
   </div>
   {% endfor %}
   </div>
+  {% endfor %}
   {% else %}
   <p class="no-papers">No papers in this category yet.</p>
   {% endif %}
@@ -1112,12 +1137,17 @@ def index():
         start       = (page - 1) * PAGE_SIZE
         shown       = tab_papers[start: start + PAGE_SIZE]
 
+    date_groups = [
+        (label, list(items))
+        for label, items in groupby(shown, key=date_saved_label)
+    ]
+
     return render_template_string(
         TEMPLATE,
         tabs=ALL_TABS, tab=tab,
         categories=CATEGORIES,
         counts=counts, total=len(papers),
-        papers=shown, start=start, shown_count=len(shown),
+        papers=shown, date_groups=date_groups, start=start, shown_count=len(shown),
         tab_count=tab_count,
         page=page, total_pages=total_pages,
         page_range=build_page_range(page, total_pages),
