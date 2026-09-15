@@ -38,7 +38,7 @@ SEEN_FILE   = PAPERS_DIR / f"seen_papers_{MONTH}.tsv"
 OUT_FILE    = PAPERS_DIR / f"new_papers_{TODAY}.tsv"
 SEEN_FIELDS = ["date_seen", "source_name", "source_url", "paper_url", "title", "authors",
                "abstract", "keywords", "pub_date", "place", "category",
-               "viewed", "read", "bookmarked", "labelled",
+               "viewed", "read", "bookmarked", "important", "labelled",
                "impactful_researcher", "impactful_institution", "image_url"]
 
 SESSION = requests.Session()

@@ -66,7 +66,7 @@ On each run the script:
 | `pub_date` | Publication date |
 | `place` | Venue (conference, journal, or publisher) |
 | `category` | Topic category assigned by `paper_categorizer.py` |
-| `viewed` / `read` / `bookmarked` / `labelled` | User flags set via `paper_viewer.py` |
+| `viewed` / `read` / `bookmarked` / `important` / `labelled` | User flags set via `paper_viewer.py` |
 | `impactful_researcher` | `true` if any author has >10,000 Scholar citations |
 | `impactful_institution` | `true` if any impactful author is at an institution with >50,000 combined citations |
 
@@ -325,8 +325,8 @@ python institution_details.py
 
 A Flask web application for browsing the tracked paper corpus.  Papers are
 grouped into tabs by category.  Supports filtering by viewed / read /
-bookmarked / labelled status and by venue.  Inline category reassignment and
-paper deletion are also available.
+bookmarked / important / labelled status and by venue.  Inline category
+reassignment and paper deletion are also available.
 
 Additionally, pasting an arXiv or OpenReview URL into the search bar fetches,
 classifies, and adds the paper to the corpus on the fly.

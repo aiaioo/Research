@@ -25,7 +25,7 @@ CATEGORIES = ["vision", "training", "models", "memory", "safety", "voice", "arti
 ALL_TABS   = ["all"] + sorted(CATEGORIES) + ["others"]
 PAGE_SIZE  = 100
 
-USER_FIELDS = {"viewed", "read", "bookmarked", "labelled", "category"}
+USER_FIELDS = {"viewed", "read", "bookmarked", "important", "labelled", "category"}
 
 app    = Flask(__name__)
 _cache: list | None = None
@@ -43,7 +43,7 @@ except Exception:
     SEEN_FIELDS = [
         "date_seen", "source_name", "source_url", "paper_url", "title",
         "authors", "abstract", "keywords", "pub_date", "place",
-        "viewed", "read", "bookmarked", "labelled", "category",
+        "viewed", "read", "bookmarked", "important", "labelled", "category",
         "impactful_researcher", "impactful_institution", "image_url",
     ]
 
@@ -205,7 +205,7 @@ def update_paper_field(paper_url: str, updates: dict) -> bool:
             reader     = csv.DictReader(f, delimiter="\t")
             fieldnames = list(reader.fieldnames or [])
             rows       = list(reader)
-        for col in ("viewed", "read", "bookmarked", "labelled"):
+        for col in ("viewed", "read", "bookmarked", "important", "labelled"):
             if col not in fieldnames:
                 fieldnames.append(col)
                 for r in rows:
@@ -371,6 +371,7 @@ TEMPLATE = """\
       --shadow:     0 1px 2px rgba(0,0,0,.04), 0 2px 5px rgba(0,0,0,.06);
       --accent-v:   #1d52d6;
       --accent-b:   #b45309;
+      --accent-i:   #7c3aed;
       --danger:     #c0392b;
     }
     html.dark {
@@ -386,6 +387,7 @@ TEMPLATE = """\
       --shadow:     none;
       --accent-v:   #7bb3ff;
       --accent-b:   #f59e0b;
+      --accent-i:   #a78bfa;
       --danger:     #e74c3c;
     }
 
@@ -576,6 +578,7 @@ TEMPLATE = """\
     }
     .card.is-viewed     { border-left: 3px solid var(--accent-v) !important; }
     .card.is-bookmarked { border-left: 3px solid var(--accent-b) !important; }
+    .card.is-important  { border-left: 3px solid var(--accent-i) !important; }
     .card.is-read .paper-title a,
     .card.is-read .paper-authors,
     .card.is-read .abstract-text { opacity: .5; }
@@ -747,6 +750,9 @@ TEMPLATE = """\
       <input type="checkbox" id="filter-bookmarked" {% if show_bookmarked %}checked{% endif %}> Bookmarked
     </label>
     <label class="filter-check">
+      <input type="checkbox" id="filter-important" {% if show_important %}checked{% endif %}> Important
+    </label>
+    <label class="filter-check">
       <input type="checkbox" id="filter-labelled" {% if show_labelled %}checked{% endif %}> Labelled
     </label>
     <div class="filter-divider"></div>
@@ -787,7 +793,8 @@ TEMPLATE = """\
   {% set is_viewed     = p.viewed     == 'true' %}
   {% set is_read       = p['read']    == 'true' %}
   {% set is_bookmarked = p.bookmarked == 'true' %}
-  <div class="card{% if is_viewed %} is-viewed{% endif %}{% if is_bookmarked %} is-bookmarked{% endif %}{% if is_read %} is-read{% endif %}"
+  {% set is_important  = p.important  == 'true' %}
+  <div class="card{% if is_viewed %} is-viewed{% endif %}{% if is_bookmarked %} is-bookmarked{% endif %}{% if is_important %} is-important{% endif %}{% if is_read %} is-read{% endif %}"
        data-url="{{ p.paper_url }}">
    <div class="card-body">
     {% if p.image_url %}
@@ -841,6 +848,10 @@ TEMPLATE = """\
         <label class="paper-check">
           <input type="checkbox" class="paper-check-input" data-url="{{ p.paper_url }}" data-field="bookmarked"
                  {% if is_bookmarked %}checked{% endif %}> Bookmarked
+        </label>
+        <label class="paper-check">
+          <input type="checkbox" class="paper-check-input" data-url="{{ p.paper_url }}" data-field="important"
+                 {% if is_important %}checked{% endif %}> Important
         </label>
         <button class="delete-btn" data-url="{{ p.paper_url }}" title="Delete paper" type="button">
           <svg width="14" height="14" viewBox="0 0 16 16" fill="none" xmlns="http://www.w3.org/2000/svg">
@@ -959,6 +970,7 @@ document.querySelectorAll('.paper-check-input').forEach(cb => {
     if (this.dataset.field === 'viewed')     card.classList.toggle('is-viewed',     this.checked);
     if (this.dataset.field === 'read')       card.classList.toggle('is-read',       this.checked);
     if (this.dataset.field === 'bookmarked') card.classList.toggle('is-bookmarked', this.checked);
+    if (this.dataset.field === 'important')  card.classList.toggle('is-important',  this.checked);
   });
 });
 
@@ -1017,7 +1029,7 @@ searchInput?.addEventListener('keydown', function(e) {
 });
 
 // ── Filters ────────────────────────────────────────────────────────────────────
-['filter-viewed', 'filter-read', 'filter-bookmarked', 'filter-labelled',
+['filter-viewed', 'filter-read', 'filter-bookmarked', 'filter-important', 'filter-labelled',
  'filter-impactful-researcher', 'filter-impactful-institution'].forEach(id => {
   document.getElementById(id)?.addEventListener('change', function() {
     const params = new URLSearchParams(window.location.search);
@@ -1074,17 +1086,19 @@ def index():
     show_viewed               = request.args.get("show_viewed",               "") == "1"
     show_read                 = request.args.get("show_read",                 "") == "1"
     show_bookmarked           = request.args.get("show_bookmarked",           "") == "1"
+    show_important             = request.args.get("show_important",           "") == "1"
     show_labelled             = request.args.get("show_labelled",             "") == "1"
     show_impactful_researcher = request.args.get("show_impactful_researcher", "") == "1"
     show_impactful_institution= request.args.get("show_impactful_institution","") == "1"
     filter_venue              = request.args.get("venue", "").strip()
-    any_filter = bool(show_viewed or show_read or show_bookmarked or show_labelled
+    any_filter = bool(show_viewed or show_read or show_bookmarked or show_important or show_labelled
                       or show_impactful_researcher or show_impactful_institution
                       or filter_venue)
     filter_qs = ""
     if show_viewed:                filter_qs += "&show_viewed=1"
     if show_read:                  filter_qs += "&show_read=1"
     if show_bookmarked:            filter_qs += "&show_bookmarked=1"
+    if show_important:             filter_qs += "&show_important=1"
     if show_labelled:              filter_qs += "&show_labelled=1"
     if show_impactful_researcher:  filter_qs += "&show_impactful_researcher=1"
     if show_impactful_institution: filter_qs += "&show_impactful_institution=1"
@@ -1118,12 +1132,13 @@ def index():
 
         tab_papers = papers if tab == "all" else groups.get(tab, [])
         if not is_search_mode:
-            if show_viewed or show_read or show_bookmarked or show_labelled or show_impactful_researcher or show_impactful_institution:
+            if show_viewed or show_read or show_bookmarked or show_important or show_labelled or show_impactful_researcher or show_impactful_institution:
                 tab_papers = [
                     p for p in tab_papers
                     if (show_viewed               and p.get("viewed")               == "true")
                     or (show_read                 and p.get("read")                  == "true")
                     or (show_bookmarked           and p.get("bookmarked")            == "true")
+                    or (show_important            and p.get("important")             == "true")
                     or (show_labelled             and p.get("labelled")              == "true")
                     or (show_impactful_researcher and p.get("impactful_researcher")  == "true")
                     or (show_impactful_institution and p.get("impactful_institution") == "true")
@@ -1152,7 +1167,7 @@ def index():
         page=page, total_pages=total_pages,
         page_range=build_page_range(page, total_pages),
         show_viewed=show_viewed, show_read=show_read,
-        show_bookmarked=show_bookmarked, show_labelled=show_labelled,
+        show_bookmarked=show_bookmarked, show_important=show_important, show_labelled=show_labelled,
         show_impactful_researcher=show_impactful_researcher,
         show_impactful_institution=show_impactful_institution,
         filter_venue=filter_venue, all_venues=all_venues,
