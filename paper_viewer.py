@@ -779,7 +779,7 @@ TEMPLATE = """\
       </div>
     </form>
     <div class="spacer"></div>
-    <a href="/blog/" class="reload-link">Blog →</a>
+    <!--<a href="/blog/" class="reload-link">Blog →</a>-->
     {% if session.get('blog_logged_in') %}
     <a href="{{ url_for('blog.logout') }}" class="reload-link">Log out</a>
     {% else %}
