@@ -586,7 +586,7 @@ TEMPLATE = """\
 
     .paper-title { margin-bottom: .16rem; }
     .paper-title a {
-      font-size: .92rem; font-weight: 600;
+      font-size: 1.29rem; font-weight: 600;
       color: var(--primary); text-decoration: none; line-height: 1.38;
     }
     .paper-title a:hover { text-decoration: underline; }
