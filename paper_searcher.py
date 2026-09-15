@@ -219,32 +219,61 @@ def rss_blob(entry: dict) -> str:
 def arxiv_metadata(arxiv_id: str) -> dict:
     """Fetch title, authors, categories, pub date, and journal ref from the arXiv Atom API."""
     clean = re.sub(r"v[0-9]+$", "", arxiv_id)
-    try:
-        r = SESSION.get(f"http://export.arxiv.org/api/query?id_list={clean}", timeout=10)
-        root = ET.fromstring(r.text)
-        ns = {"a": "http://www.w3.org/2005/Atom", "arxiv": "http://arxiv.org/schemas/atom"}
-        entry = root.find("a:entry", ns)
-        if entry is None:
-            return {}
-        title   = entry.find("a:title", ns).text.strip().replace("\n", " ")
-        authors = ", ".join(
-            el.find("a:name", ns).text
-            for el in entry.findall("a:author", ns)
-        )
-        categories = {
-            el.get("term", "")
-            for el in entry.findall("a:category", ns)
-        }
-        summary_el = entry.find("a:summary", ns)
-        abstract = summary_el.text.strip().replace("\n", " ") if summary_el is not None else ""
-        published_el = entry.find("a:published", ns)
-        pub_date = published_el.text[:10] if published_el is not None and published_el.text else ""
-        jr_el = entry.find("arxiv:journal_ref", ns)
-        journal_ref = jr_el.text.strip() if jr_el is not None and jr_el.text else ""
-        return {"title": title, "authors": authors, "categories": categories,
-                "abstract": abstract, "pub_date": pub_date, "journal_ref": journal_ref}
-    except Exception:
-        return {}
+    ns = {"a": "http://www.w3.org/2005/Atom", "arxiv": "http://arxiv.org/schemas/atom"}
+    # Use https directly: the http endpoint 301-redirects to https, so every lookup
+    # was silently costing two requests against arXiv's rate limiter instead of one,
+    # which intermittently tripped "Rate exceeded" 429s that got swallowed below.
+    url = f"https://export.arxiv.org/api/query?id_list={clean}"
+    last_err = None
+    for attempt in range(3):
+        try:
+            r = SESSION.get(url, timeout=15)
+            if r.status_code == 429:
+                last_err = f"429 rate limited (attempt {attempt + 1})"
+                time.sleep(5 * (attempt + 1))
+                continue
+            r.raise_for_status()
+            root = ET.fromstring(r.text)
+            entry = root.find("a:entry", ns)
+            if entry is None:
+                return {}
+            title   = entry.find("a:title", ns).text.strip().replace("\n", " ")
+            authors = ", ".join(
+                el.find("a:name", ns).text
+                for el in entry.findall("a:author", ns)
+            )
+            categories = {
+                el.get("term", "")
+                for el in entry.findall("a:category", ns)
+            }
+            summary_el = entry.find("a:summary", ns)
+            abstract = summary_el.text.strip().replace("\n", " ") if summary_el is not None else ""
+            published_el = entry.find("a:published", ns)
+            pub_date = published_el.text[:10] if published_el is not None and published_el.text else ""
+            jr_el = entry.find("arxiv:journal_ref", ns)
+            journal_ref = jr_el.text.strip() if jr_el is not None and jr_el.text else ""
+            return {"title": title, "authors": authors, "categories": categories,
+                    "abstract": abstract, "pub_date": pub_date, "journal_ref": journal_ref}
+        except ET.ParseError as e:
+            # Transient bad/empty body (e.g. a rate-limit page slipping past the 429 check)
+            last_err = f"bad XML: {e}"
+            time.sleep(3 * (attempt + 1))
+        except Exception as e:
+            last_err = str(e)
+            break
+
+    # The export.arxiv.org API is stricter about rate limits than the main site (and
+    # sometimes unreachable from a given network even when arxiv.org itself is fine).
+    # Fall back to scraping the abs page's citation_* meta tags rather than losing the
+    # title/authors entirely.  Only arXiv categories (used for AI/ML filtering) are lost.
+    print(f"  [warn] arXiv API fetch failed for {clean} ({last_err}); "
+          f"falling back to abs page", file=sys.stderr)
+    meta = _citation_meta(f"https://arxiv.org/abs/{clean}")
+    if meta.get("title"):
+        return {"title": meta.get("title", ""), "authors": meta.get("authors", ""),
+                "categories": set(), "abstract": meta.get("abstract", ""),
+                "pub_date": meta.get("pub_date", ""), "journal_ref": ""}
+    return {}
 
 def openreview_metadata(paper_id: str) -> dict:
     def _val(x):
