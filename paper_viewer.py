@@ -30,6 +30,12 @@ USER_FIELDS = {"viewed", "read", "bookmarked", "important", "labelled", "categor
 app    = Flask(__name__)
 _cache: list | None = None
 
+from blog import create_blog_blueprint, get_secret_key
+
+app.secret_key = get_secret_key()
+app.permanent_session_lifetime = __import__("datetime").timedelta(days=14)
+app.register_blueprint(create_blog_blueprint(lambda: load_papers()))
+
 try:
     from paper_searcher import (
         enrich, enrich_arbitrary_url,
@@ -708,6 +714,7 @@ TEMPLATE = """\
       </div>
     </form>
     <div class="spacer"></div>
+    <a href="/blog/" class="reload-link">Blog →</a>
     <button class="theme-btn" id="theme-toggle">☾ Dark</button>
     <a href="/reload" class="reload-link">↺ Reload</a>
   </div>
