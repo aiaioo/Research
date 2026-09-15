@@ -242,8 +242,8 @@ label.field-label { display: block; font-weight: 600; color: var(--text-sub); ma
 
 NAV = """
 <div class="top-bar">
-  <a class="brand" href="{{ url_for('blog.index') }}">Blog</a>
   <a class="nav-link" href="/">← Papers</a>
+  <a class="brand" href="{{ url_for('blog.index') }}">Blog</a>
   <div class="spacer"></div>
   {% if session.get('blog_logged_in') %}
     <a class="nav-link" href="{{ url_for('blog.new_post') }}">+ New post</a>
