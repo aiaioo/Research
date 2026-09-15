@@ -474,6 +474,18 @@ TEMPLATE = """\
     }
     .clear-search-btn:hover { color: var(--text); background: var(--filter-bg); }
 
+    .search-results {
+      position: absolute; z-index: 20; top: calc(100% + 4px); left: 0; right: 0;
+      background: var(--surface); border: 1px solid var(--border); border-radius: 5px;
+      box-shadow: var(--shadow); max-height: 320px; overflow-y: auto; display: none;
+    }
+    .search-results.show { display: block; }
+    .search-result-item { padding: .45rem .7rem; cursor: pointer; border-bottom: 1px solid var(--border); }
+    .search-result-item:last-child { border-bottom: none; }
+    .search-result-item:hover, .search-result-item.active { background: var(--primary-bg); }
+    .search-result-title { font-weight: 600; color: var(--text); font-size: .8rem; }
+    .search-result-meta { color: var(--text-muted); font-size: .72rem; margin-top: .1rem; }
+
     /* ── Search banner ────────────────────────────────────────────────────── */
     .search-banner {
       background: var(--primary-bg);
@@ -770,12 +782,13 @@ TEMPLATE = """\
       <input type="hidden" name="prev_page" id="prev-page-input" value="{{ prev_page }}">
       <div class="search-wrap">
         <input class="search-input" type="text" name="search_url" id="search-input"
-               placeholder="Paste any paper URL (arXiv, HuggingFace, PDF, OpenReview, ACL…)"
+               placeholder="Paste a paper URL, or search by title…"
                value="{{ search_url or '' }}"
                autocomplete="off" spellcheck="false">
         {% if is_search_mode %}
         <a class="clear-search-btn" href="?tab={{ prev_tab }}&page={{ prev_page }}">✕ Clear</a>
         {% endif %}
+        <div class="search-results" id="search-results"></div>
       </div>
     </form>
     <div class="spacer"></div>
@@ -1217,23 +1230,109 @@ document.querySelectorAll('.comment-form').forEach(form => {
 });
 
 // ── Search form ────────────────────────────────────────────────────────────────
-const searchForm  = document.getElementById('search-form');
-const searchInput = document.getElementById('search-input');
-const overlay     = document.getElementById('loading-overlay');
+const searchForm    = document.getElementById('search-form');
+const searchInput   = document.getElementById('search-input');
+const searchResults = document.getElementById('search-results');
+const overlay       = document.getElementById('loading-overlay');
+
+function currentPrevParams() {
+  const params = new URLSearchParams(window.location.search);
+  return {
+    tab:  params.get('tab')  || '{{ tab }}',
+    page: params.get('page') || '1',
+  };
+}
+
+function goToPaper(paperUrl) {
+  const prev = currentPrevParams();
+  overlay.classList.add('active');
+  window.location.href = '/?search_url=' + encodeURIComponent(paperUrl)
+    + '&prev_tab=' + encodeURIComponent(prev.tab)
+    + '&prev_page=' + encodeURIComponent(prev.page);
+}
+
+function hideSearchResults() {
+  searchResults.classList.remove('show');
+  searchResults.innerHTML = '';
+}
 
 searchForm?.addEventListener('submit', function(e) {
   const val = searchInput.value.trim();
   if (!val) { e.preventDefault(); return; }
+  // If a title-search dropdown is open, Enter picks the highlighted (or first) result
+  // instead of submitting the raw text as a URL.
+  if (searchResults.classList.contains('show')) {
+    const active = searchResults.querySelector('.search-result-item.active')
+                || searchResults.querySelector('.search-result-item[data-url]');
+    if (active) {
+      e.preventDefault();
+      goToPaper(active.dataset.url);
+      return;
+    }
+  }
   // Fill in prev_tab and prev_page from current URL before submitting
-  const params = new URLSearchParams(window.location.search);
-  document.getElementById('prev-tab-input').value  = params.get('tab')  || '{{ tab }}';
-  document.getElementById('prev-page-input').value = params.get('page') || '1';
+  const prev = currentPrevParams();
+  document.getElementById('prev-tab-input').value  = prev.tab;
+  document.getElementById('prev-page-input').value = prev.page;
   overlay.classList.add('active');
 });
 
-// Escape clears search input when focused
+let searchTimer = null;
+searchInput?.addEventListener('input', function() {
+  clearTimeout(searchTimer);
+  const q = this.value.trim();
+  if (q.length < 2) { hideSearchResults(); return; }
+  searchTimer = setTimeout(() => {
+    fetch('/api/search_papers?q=' + encodeURIComponent(q))
+      .then(r => r.json())
+      .then(data => {
+        if (searchInput.value.trim() !== q) return; // stale response
+        searchResults.innerHTML = '';
+        if (!data.results.length) { hideSearchResults(); return; }
+        data.results.forEach((p, i) => {
+          const div = document.createElement('div');
+          div.className = 'search-result-item' + (i === 0 ? ' active' : '');
+          div.dataset.url = p.paper_url;
+          div.innerHTML = '<div class="search-result-title"></div><div class="search-result-meta"></div>';
+          div.querySelector('.search-result-title').textContent = p.title || p.paper_url;
+          const metaParts = [p.authors, p.place].filter(Boolean);
+          div.querySelector('.search-result-meta').textContent = metaParts.join(' · ') || p.paper_url;
+          div.addEventListener('mousedown', (e) => {
+            // mousedown (not click) fires before the input's blur hides the dropdown
+            e.preventDefault();
+            goToPaper(p.paper_url);
+          });
+          searchResults.appendChild(div);
+        });
+        searchResults.classList.add('show');
+      })
+      .catch(() => hideSearchResults());
+  }, 250);
+});
+
 searchInput?.addEventListener('keydown', function(e) {
-  if (e.key === 'Escape') { this.value = ''; this.blur(); }
+  if (e.key === 'Escape') {
+    if (searchResults.classList.contains('show')) { hideSearchResults(); return; }
+    this.value = ''; this.blur();
+    return;
+  }
+  if (!searchResults.classList.contains('show')) return;
+  const items = Array.from(searchResults.querySelectorAll('.search-result-item'));
+  if (!items.length) return;
+  if (e.key === 'ArrowDown' || e.key === 'ArrowUp') {
+    e.preventDefault();
+    const curIdx = items.findIndex(el => el.classList.contains('active'));
+    let nextIdx = curIdx + (e.key === 'ArrowDown' ? 1 : -1);
+    nextIdx = Math.max(0, Math.min(items.length - 1, nextIdx));
+    items.forEach(el => el.classList.remove('active'));
+    items[nextIdx].classList.add('active');
+    items[nextIdx].scrollIntoView({ block: 'nearest' });
+  }
+});
+
+searchInput?.addEventListener('blur', function() {
+  // Delay so a mousedown-triggered navigation on a result isn't cut off
+  setTimeout(hideSearchResults, 150);
 });
 
 // ── Filters ────────────────────────────────────────────────────────────────────
@@ -1263,6 +1362,27 @@ document.getElementById('filter-venue')?.addEventListener('change', function() {
 
 
 # ── Routes ─────────────────────────────────────────────────────────────────────
+
+@app.route("/api/search_papers")
+def api_search_papers():
+    q = request.args.get("q", "").strip().lower()
+    if len(q) < 2:
+        return jsonify(results=[])
+    results = []
+    for p in load_papers():
+        title   = (p.get("title") or "").lower()
+        authors = (p.get("authors") or "").lower()
+        if q in title or q in authors:
+            results.append({
+                "title":     p.get("title") or p.get("paper_url", ""),
+                "authors":   p.get("authors", ""),
+                "paper_url": p.get("paper_url", ""),
+                "place":     p.get("place", ""),
+            })
+        if len(results) >= 15:
+            break
+    return jsonify(results=results)
+
 
 @app.route("/")
 def index():
