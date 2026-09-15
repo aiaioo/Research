@@ -19,7 +19,7 @@ from markupsafe import Markup, escape
 ROOT       = Path(__file__).parent
 PAPERS_DIR = ROOT / "papers"
 
-CATEGORIES = ["vision", "training", "models", "memory", "safety", "voice"]
+CATEGORIES = ["vision", "training", "models", "memory", "safety", "voice", "articles"]
 ALL_TABS   = ["all"] + sorted(CATEGORIES) + ["others"]
 PAGE_SIZE  = 100
 
@@ -42,14 +42,16 @@ except Exception:
         "date_seen", "source_name", "source_url", "paper_url", "title",
         "authors", "abstract", "keywords", "pub_date", "place",
         "viewed", "read", "bookmarked", "labelled", "category",
-        "impactful_researcher", "impactful_institution",
+        "impactful_researcher", "impactful_institution", "image_url",
     ]
 
 try:
-    from paper_categorizer import classify as _classify_fn
+    from paper_categorizer import classify as _classify_fn, is_article_url as _is_article_url_fn
     _CLASSIFY_AVAILABLE = True
 except ImportError:
     _CLASSIFY_AVAILABLE = False
+    def _is_article_url_fn(url: str) -> bool:
+        return False
 
 try:
     from paper_categorizer import (
@@ -279,7 +281,7 @@ def lookup_or_fetch_paper(raw_url: str) -> tuple | None:
     p_data: dict = {
         "paper_url": paper_url, "title": "", "authors": "",
         "abstract": "", "keywords": "", "pub_date": "", "place": "",
-        "categories": set(),
+        "image_url": "", "categories": set(),
     }
     try:
         p_data = enrich(p_data)
@@ -292,13 +294,16 @@ def lookup_or_fetch_paper(raw_url: str) -> tuple | None:
         return None
     if not p_data.get("title") and not p_data.get("abstract"):
         return None
-    cat = ""
-    if _CLASSIFY_AVAILABLE:
+    if _CLASSIFY_AVAILABLE and _is_article_url_fn(paper_url):
+        cat = "articles"
+    elif _CLASSIFY_AVAILABLE:
         cat = _classify_fn(
             p_data.get("title", ""),
             p_data.get("abstract", ""),
             p_data.get("keywords", ""),
         )
+    else:
+        cat = ""
     today = datetime.now().strftime("%Y%m%d")
     row = {f: "" for f in SEEN_FIELDS}
     row.update({
@@ -312,6 +317,7 @@ def lookup_or_fetch_paper(raw_url: str) -> tuple | None:
         "keywords":    p_data.get("keywords", ""),
         "pub_date":    p_data.get("pub_date", ""),
         "place":       p_data.get("place", ""),
+        "image_url":   p_data.get("image_url", ""),
         "category":    cat,
     })
     append_seen([row])
@@ -560,6 +566,18 @@ TEMPLATE = """\
     }
     .paper-title a:hover { text-decoration: underline; }
 
+    .card-body { display: flex; gap: .8rem; align-items: flex-start; }
+    .card-thumb {
+      flex: 0 0 auto; width: 96px; height: 96px;
+      border-radius: 5px; overflow: hidden; background: var(--bg);
+      border: 1px solid var(--border);
+    }
+    .card-thumb img { width: 100%; height: 100%; object-fit: cover; display: block; }
+    .card-main { flex: 1; min-width: 0; }
+    @media (max-width: 480px) {
+      .card-thumb { width: 72px; height: 72px; }
+    }
+
     .paper-authors { color: var(--text-sub); margin-bottom: .28rem; }
 
     .paper-meta {
@@ -747,6 +765,14 @@ TEMPLATE = """\
   {% set is_bookmarked = p.bookmarked == 'true' %}
   <div class="card{% if is_viewed %} is-viewed{% endif %}{% if is_bookmarked %} is-bookmarked{% endif %}{% if is_read %} is-read{% endif %}"
        data-url="{{ p.paper_url }}">
+   <div class="card-body">
+    {% if p.image_url %}
+    <div class="card-thumb">
+      <img src="{{ p.image_url }}" alt="" loading="lazy" referrerpolicy="no-referrer"
+           onerror="this.closest('.card-thumb').remove()">
+    </div>
+    {% endif %}
+    <div class="card-main">
 
     <div class="paper-title">
       <a href="{{ p.paper_url }}" target="_blank" rel="noopener"
@@ -804,6 +830,8 @@ TEMPLATE = """\
     <div class="abstract-text">{{ p.abstract }}</div>
     {% endif %}
 
+    </div><!-- /card-main -->
+   </div><!-- /card-body -->
   </div>
   {% endfor %}
   </div>

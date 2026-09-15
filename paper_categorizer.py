@@ -6,11 +6,14 @@ Reads papers/seen_papers_*.tsv and papers/new_papers_*.tsv.
 For every row where 'category' is empty and both 'title' and 'abstract'
 are non-empty, assigns one of:
 
-  memory · safety · models · vision · voice · training
+  memory · safety · models · vision · voice · training · articles
 
-Classification is keyword-scoring over title (3×) and abstract (1×).
-arXiv category codes in the 'keywords' field provide bonus signals.
-The highest-scoring category wins; ties break by the priority order above.
+Rows whose URL is a blog post / newsletter / LinkedIn article rather than a
+research paper (see is_article_url) are assigned 'articles' directly.
+Everything else is classified by keyword-scoring over title (3×) and
+abstract (1×). arXiv category codes in the 'keywords' field provide bonus
+signals. The highest-scoring category wins; ties break by the priority
+order above.
 
 Usage:
     python paper_categorizer.py                    # classify all files
@@ -323,6 +326,57 @@ ARXIV_BONUS: dict[str, dict[str, int]] = {
 }
 
 
+# ── Articles (blog posts / Substack / LinkedIn / etc.) ─────────────────────────
+# A paper is anything published on a recognized preprint server, conference
+# proceedings site, or journal host. Anything else that lives on a known
+# blog/newsletter platform (or under a generic "/blog/"-style path on a site
+# that isn't one of those paper hosts) is an article, not a research paper —
+# it gets its own category instead of being topic-classified.
+PAPER_DOMAINS = (
+    "arxiv.org", "openreview.net", "aclanthology.org",
+    "huggingface.co/papers", "pubmed.ncbi.nlm.nih.gov",
+    "ncbi.nlm.nih.gov/pmc", "semanticscholar.org",
+    "dl.acm.org", "ieeexplore.ieee.org",
+    "proceedings.mlr.press", "proceedings.neurips.cc", "proceedings.nips.cc",
+    "jmlr.org", "nature.com", "science.org", "springer.com",
+    "link.springer.com", "mdpi.com", "ijcai.org", "ojs.aaai.org",
+    "ecva.net", "biorxiv.org", "medrxiv.org", "ssrn.com", "dblp.org",
+    "sciencedirect.com", "wiley.com", "cell.com", "pnas.org",
+    "usenix.org", "openaccess.thecvf.com", "isca-archive.org",
+    "distill.pub",
+)
+
+ARTICLE_DOMAINS = (
+    "substack.com", "medium.com", "linkedin.com", "wordpress.com",
+    "blogspot.com", "ghost.io", "beehiiv.com", "tumblr.com",
+    "substackcdn.com",
+)
+
+ARTICLE_PATH_HINTS = ("/blog/", "/blogs/", "/news/", "/articles/", "/insights/")
+
+
+def is_paper_url(url: str) -> bool:
+    """True if the URL is hosted on a recognized preprint/journal/proceedings site."""
+    if not url:
+        return False
+    url_lc = url.lower()
+    return any(d in url_lc for d in PAPER_DOMAINS)
+
+
+def is_article_url(url: str) -> bool:
+    """
+    True if the URL looks like a blog post / newsletter / LinkedIn article
+    rather than a research paper: it's on a known article-hosting platform,
+    or under a generic blog-style path, and it isn't on a recognized paper host.
+    """
+    if not url or is_paper_url(url):
+        return False
+    url_lc = url.lower()
+    if any(d in url_lc for d in ARTICLE_DOMAINS):
+        return True
+    return any(h in url_lc for h in ARTICLE_PATH_HINTS)
+
+
 # ── Impactful researchers / institutions ──────────────────────────────────────
 
 def _latest_tsv(glob_pattern: str) -> Path | None:
@@ -579,11 +633,14 @@ def process_file(
 
     cat_counts: Counter = Counter()
     for i, row in candidates:
-        cat = classify(
-            row.get("title", ""),
-            row.get("abstract", ""),
-            row.get("keywords", ""),
-        )
+        if is_article_url(row.get("paper_url", "")) or is_article_url(row.get("source_url", "")):
+            cat = "articles"
+        else:
+            cat = classify(
+                row.get("title", ""),
+                row.get("abstract", ""),
+                row.get("keywords", ""),
+            )
         rows[i]["category"] = cat
         cat_counts[cat] += 1
         if dry_run:

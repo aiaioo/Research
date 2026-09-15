@@ -21,7 +21,7 @@ import time
 import xml.etree.ElementTree as ET
 from datetime import datetime, timezone
 from pathlib import Path
-from urllib.parse import urlparse
+from urllib.parse import urljoin, urlparse
 
 import io
 
@@ -39,7 +39,7 @@ OUT_FILE    = PAPERS_DIR / f"new_papers_{TODAY}.tsv"
 SEEN_FIELDS = ["date_seen", "source_name", "source_url", "paper_url", "title", "authors",
                "abstract", "keywords", "pub_date", "place", "category",
                "viewed", "read", "bookmarked", "labelled",
-               "impactful_researcher", "impactful_institution"]
+               "impactful_researcher", "impactful_institution", "image_url"]
 
 SESSION = requests.Session()
 SESSION.headers.update({
@@ -606,6 +606,11 @@ def _extract_html_meta(content: str, url: str) -> dict:
         title = _meta("og:title") or _meta("twitter:title")
     abstract = _meta("og:description") or _meta("twitter:description") or _meta("description")
 
+    # Main image / thumbnail (OpenGraph / Twitter card), resolved to an absolute URL
+    image_url = _meta("og:image") or _meta("twitter:image") or _meta("twitter:image:src")
+    if image_url:
+        image_url = urljoin(url, image_url)
+
     # Generic abstract element
     if not abstract:
         for el in soup.find_all(True, class_=lambda c: c and "abstract" in " ".join(c).lower()):
@@ -621,7 +626,7 @@ def _extract_html_meta(content: str, url: str) -> dict:
             title = t.get_text(strip=True)
 
     return {"title": title, "authors": authors, "abstract": abstract,
-            "pub_date": pub_date, "place": venue}
+            "pub_date": pub_date, "place": venue, "image_url": image_url}
 
 
 def enrich_arbitrary_url(p: dict) -> dict:
@@ -648,7 +653,7 @@ def enrich_arbitrary_url(p: dict) -> dict:
             r.encoding = r.encoding or "utf-8"
             meta = _extract_html_meta(r.text, url)
 
-        for field in ("title", "authors", "abstract", "pub_date", "place"):
+        for field in ("title", "authors", "abstract", "pub_date", "place", "image_url"):
             if meta.get(field) and not p.get(field):
                 p[field] = meta[field]
     except Exception as e:
