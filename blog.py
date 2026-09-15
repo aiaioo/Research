@@ -32,6 +32,8 @@ from flask import (
 )
 from markupsafe import Markup, escape
 
+import comments as comments_store
+
 ROOT           = Path(__file__).parent
 BLOG_DIR       = ROOT / "blog_data"
 POSTS_FILE     = BLOG_DIR / "posts.json"
@@ -495,6 +497,8 @@ def create_blog_blueprint(get_papers) -> Blueprint:
                 }
                 posts.append(post)
                 _save_posts(posts)
+            known_urls = {p.get("paper_url", "") for p in get_papers()}
+            comments_store.sync_blog_post_mentions(post, known_urls)
             return redirect(url_for("blog.view_post", slug=post["slug"]))
         return render_template_string(
             EDIT_TEMPLATE, base_css=BASE_CSS, post=None, csrf_token=_csrf_token(),
@@ -521,6 +525,8 @@ def create_blog_blueprint(get_papers) -> Blueprint:
                 post["content_md"] = content
                 post["updated_at"] = _now()
                 _save_posts(posts)
+                known_urls = {p.get("paper_url", "") for p in get_papers()}
+                comments_store.sync_blog_post_mentions(post, known_urls)
                 return redirect(url_for("blog.view_post", slug=post["slug"]))
         return render_template_string(
             EDIT_TEMPLATE, base_css=BASE_CSS, post=post, csrf_token=_csrf_token(),
@@ -536,6 +542,7 @@ def create_blog_blueprint(get_papers) -> Blueprint:
             if len(new_posts) == len(posts):
                 abort(404)
             _save_posts(new_posts)
+        comments_store.delete_blog_post_mentions(slug)
         return redirect(url_for("blog.index"))
 
     @blog.route("/api/papers")

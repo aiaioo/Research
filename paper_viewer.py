@@ -18,6 +18,8 @@ from pathlib import Path
 from flask import Flask, jsonify, redirect, render_template_string, request, session, url_for
 from markupsafe import Markup, escape
 
+import comments as comments_store
+
 ROOT       = Path(__file__).parent
 PAPERS_DIR = ROOT / "papers"
 
@@ -30,7 +32,7 @@ USER_FIELDS = {"viewed", "read", "bookmarked", "important", "labelled", "categor
 app    = Flask(__name__)
 _cache: list | None = None
 
-from blog import create_blog_blueprint, get_secret_key
+from blog import BLOG_USERNAME, create_blog_blueprint, get_secret_key
 
 app.secret_key = get_secret_key()
 app.permanent_session_lifetime = __import__("datetime").timedelta(days=14)
@@ -256,8 +258,10 @@ def delete_paper_from_tsvs(paper_url: str) -> bool:
                 writer.writeheader()
                 writer.writerows(new_rows)
             removed = True
-    if removed and _cache is not None:
-        _cache[:] = [p for p in _cache if p.get("paper_url", "").strip() != paper_url]
+    if removed:
+        comments_store.delete_comments_for_paper(paper_url)
+        if _cache is not None:
+            _cache[:] = [p for p in _cache if p.get("paper_url", "").strip() != paper_url]
     return removed
 
 
@@ -672,6 +676,50 @@ TEMPLATE = """\
       padding-left: .75rem; margin-top: .55rem;
     }
 
+    /* ── Comments ─────────────────────────────────────────────────────────── */
+    .comments-section { margin-top: .6rem; }
+    .comments-toggle {
+      font-family: inherit; font-size: .74rem; font-weight: 500;
+      background: none; border: none; cursor: pointer;
+      color: var(--text-muted); padding: .1rem 0;
+      display: inline-flex; align-items: center; gap: .3rem;
+    }
+    .comments-toggle:hover { color: var(--text-sub); }
+    .comments-body { margin-top: .5rem; }
+    .comments-list { display: flex; flex-direction: column; gap: .4rem; margin-bottom: .5rem; }
+    .comment {
+      background: var(--filter-bg); border-radius: 5px;
+      padding: .4rem .6rem; font-size: .76rem;
+      display: flex; align-items: flex-start; gap: .4rem;
+    }
+    .comment-text { color: var(--text-sub); white-space: pre-wrap; flex: 1; min-width: 0; }
+    .comment-meta { color: var(--text-muted); font-size: .68rem; white-space: nowrap; }
+    .comment-delete-btn {
+      background: none; border: none; cursor: pointer;
+      color: var(--text-muted); font-size: .78rem; line-height: 1;
+      padding: 0 .15rem; flex-shrink: 0;
+    }
+    .comment-delete-btn:hover { color: var(--danger); }
+    .comment-blog {
+      background: var(--primary-bg); align-items: center;
+    }
+    .comment-blog-tag { color: var(--text-muted); }
+    .comment-blog a { color: var(--primary); text-decoration: none; font-weight: 500; }
+    .comment-blog a:hover { text-decoration: underline; }
+    .comment-form { display: flex; gap: .4rem; align-items: flex-start; }
+    .comment-input {
+      font-family: inherit; font-size: .76rem; flex: 1;
+      padding: .35rem .55rem; border: 1px solid var(--border); border-radius: 5px;
+      background: var(--surface); color: var(--text); resize: vertical;
+    }
+    .comment-input:focus { outline: none; border-color: var(--primary); box-shadow: 0 0 0 2px var(--primary-bg); }
+    .comment-submit-btn {
+      font-family: inherit; font-size: .76rem;
+      background: var(--primary); color: #fff; border: none; border-radius: 5px;
+      padding: .35rem .75rem; cursor: pointer; white-space: nowrap;
+    }
+    .comment-submit-btn:hover { opacity: .9; }
+
     .no-papers { color: var(--text-muted); text-align: center; padding: 3rem 0; }
 
     /* ── Pagination ───────────────────────────────────────────────────────── */
@@ -904,6 +952,39 @@ TEMPLATE = """\
     <div class="abstract-text">{{ p.abstract }}</div>
     {% endif %}
 
+    {% set paper_comments = comments_by_paper.get(p.paper_url, []) %}
+    {% if paper_comments or session.get('blog_logged_in') %}
+    <div class="comments-section" data-url="{{ p.paper_url }}">
+      <button class="comments-toggle" type="button">
+        <span class="comments-count-label">💬 {{ paper_comments|length }} comment{{ 's' if paper_comments|length != 1 else '' }}</span>
+      </button>
+      <div class="comments-body" hidden>
+        <div class="comments-list">
+          {% for c in paper_comments %}
+          <div class="comment{% if c.source == 'blog' %} comment-blog{% endif %}" data-id="{{ c.id }}">
+            {% if c.source == 'blog' %}
+            <span class="comment-blog-tag">🔗 Mentioned in blog post:</span>
+            <a href="{{ url_for('blog.view_post', slug=c.blog_slug) }}" target="_blank" rel="noopener">{{ c.blog_title }}</a>
+            {% else %}
+            <span class="comment-text">{{ c.text }}</span>
+            <span class="comment-meta">{{ c.created_at[:10] }}</span>
+            {% if session.get('blog_logged_in') %}
+            <button class="comment-delete-btn" data-id="{{ c.id }}" title="Delete comment" type="button">✕</button>
+            {% endif %}
+            {% endif %}
+          </div>
+          {% endfor %}
+        </div>
+        {% if session.get('blog_logged_in') %}
+        <form class="comment-form">
+          <textarea class="comment-input" rows="2" placeholder="Add a comment…" maxlength="4000"></textarea>
+          <button class="comment-submit-btn" type="submit">Comment</button>
+        </form>
+        {% endif %}
+      </div>
+    </div>
+    {% endif %}
+
     </div><!-- /card-main -->
    </div><!-- /card-body -->
   </div>
@@ -1048,6 +1129,90 @@ document.querySelectorAll('.delete-btn').forEach(delBtn => {
       }
     })
     .catch(() => alert('Delete request failed.'));
+  });
+});
+
+// ── Comments ───────────────────────────────────────────────────────────────────
+function commentHTML(c) {
+  const div = document.createElement('div');
+  div.className = 'comment';
+  div.dataset.id = c.id;
+  const textSpan = document.createElement('span');
+  textSpan.className = 'comment-text';
+  textSpan.textContent = c.text;
+  const metaSpan = document.createElement('span');
+  metaSpan.className = 'comment-meta';
+  metaSpan.textContent = (c.created_at || '').slice(0, 10);
+  div.appendChild(textSpan);
+  div.appendChild(metaSpan);
+  if (LOGGED_IN) {
+    const delBtn = document.createElement('button');
+    delBtn.className = 'comment-delete-btn';
+    delBtn.type = 'button';
+    delBtn.title = 'Delete comment';
+    delBtn.dataset.id = c.id;
+    delBtn.textContent = '✕';
+    delBtn.addEventListener('click', () => deleteComment(delBtn));
+    div.appendChild(delBtn);
+  }
+  return div;
+}
+
+function deleteComment(btn) {
+  const id      = btn.dataset.id;
+  const section = btn.closest('.comments-section');
+  fetch('/comments/delete', {
+    method: 'POST',
+    headers: {'Content-Type': 'application/json'},
+    body: JSON.stringify({comment_id: id})
+  })
+  .then(r => r.json())
+  .then(data => {
+    if (!data.ok) { showToast('Delete failed', true); return; }
+    btn.closest('.comment')?.remove();
+    updateCommentCount(section);
+  })
+  .catch(() => showToast('Delete request failed', true));
+}
+
+function updateCommentCount(section) {
+  const n = section.querySelectorAll('.comment').length;
+  const label = section.querySelector('.comments-count-label');
+  if (label) label.textContent = `💬 ${n} comment${n === 1 ? '' : 's'}`;
+}
+
+document.querySelectorAll('.comments-toggle').forEach(btn => {
+  btn.addEventListener('click', function() {
+    const body = this.closest('.comments-section').querySelector('.comments-body');
+    body.hidden = !body.hidden;
+  });
+});
+
+document.querySelectorAll('.comment-delete-btn').forEach(btn => {
+  btn.addEventListener('click', () => deleteComment(btn));
+});
+
+document.querySelectorAll('.comment-form').forEach(form => {
+  form.addEventListener('submit', function(e) {
+    e.preventDefault();
+    const section  = this.closest('.comments-section');
+    const url      = section.dataset.url;
+    const textarea = this.querySelector('.comment-input');
+    const text     = textarea.value.trim();
+    if (!text) return;
+    fetch('/comments/add', {
+      method: 'POST',
+      headers: {'Content-Type': 'application/json'},
+      body: JSON.stringify({paper_url: url, text})
+    })
+    .then(r => r.json())
+    .then(data => {
+      if (!data.ok) { showToast('Comment failed: ' + (data.error || 'unknown error'), true); return; }
+      section.querySelector('.comments-list').appendChild(commentHTML(data.comment));
+      updateCommentCount(section);
+      textarea.value = '';
+    })
+    .catch(() => showToast('Comment request failed', true));
   });
 });
 
@@ -1200,10 +1365,12 @@ def index():
         (label, list(items))
         for label, items in groupby(shown, key=date_saved_label)
     ]
+    comments_by_paper = comments_store.grouped_by_paper()
 
     return render_template_string(
         TEMPLATE,
         tabs=ALL_TABS, tab=tab,
+        comments_by_paper=comments_by_paper,
         categories=CATEGORIES,
         counts=counts, total=len(papers),
         papers=shown, date_groups=date_groups, start=start, shown_count=len(shown),
@@ -1252,6 +1419,35 @@ def delete_paper():
     if not paper_url:
         return jsonify(ok=False, error="missing paper_url"), 400
     ok = delete_paper_from_tsvs(paper_url)
+    return jsonify(ok=ok)
+
+
+@app.route("/comments/add", methods=["POST"])
+def add_comment():
+    if not session.get("blog_logged_in"):
+        return jsonify(ok=False, error="Log in to add comments"), 401
+    data      = request.get_json(force=True, silent=True) or {}
+    paper_url = (data.get("paper_url") or "").strip()
+    text      = (data.get("text") or "").strip()
+    if not paper_url or not text:
+        return jsonify(ok=False, error="missing paper_url or text"), 400
+    if len(text) > 4000:
+        return jsonify(ok=False, error="comment too long"), 400
+    if not any(p.get("paper_url", "").strip() == paper_url for p in load_papers()):
+        return jsonify(ok=False, error="unknown paper_url"), 404
+    comment = comments_store.add_comment(paper_url, text, BLOG_USERNAME)
+    return jsonify(ok=True, comment=comment)
+
+
+@app.route("/comments/delete", methods=["POST"])
+def delete_comment():
+    if not session.get("blog_logged_in"):
+        return jsonify(ok=False, error="Log in to delete comments"), 401
+    data       = request.get_json(force=True, silent=True) or {}
+    comment_id = (data.get("comment_id") or "").strip()
+    if not comment_id:
+        return jsonify(ok=False, error="missing comment_id"), 400
+    ok = comments_store.delete_comment(comment_id)
     return jsonify(ok=ok)
 
 
