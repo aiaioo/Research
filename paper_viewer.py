@@ -435,7 +435,7 @@ TEMPLATE = """\
       border-bottom: 1px solid var(--border);
       flex-wrap: wrap;
     }
-    .top-bar .spacer { flex: 1; min-width: .5rem; }
+    .top-bar .spacer { flex: 0 0 auto; width: .5rem; }
     .top-bar .total  { color: var(--text-muted); white-space: nowrap; }
 
     .theme-btn {
@@ -451,7 +451,7 @@ TEMPLATE = """\
     .reload-link:hover { color: var(--text); }
 
     /* ── Search bar ───────────────────────────────────────────────────────── */
-    .search-form { display: flex; align-items: center; flex: 1; min-width: 180px; max-width: 440px; }
+    .search-form { display: flex; align-items: center; flex: 1 1 auto; min-width: 180px; }
     .search-wrap { display: flex; align-items: center; width: 100%; position: relative; }
     .search-input {
       font-family: inherit; font-size: .78rem;
