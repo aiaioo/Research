@@ -1,1 +1,30 @@
-[]
+[
+  {
+    "id": "654f6d09a99d416397ad2b7a692e2134",
+    "paper_url": "https://aiguide.substack.com/p/misleading-metaphors-and-real-risks",
+    "text": "Article by Melanie Mitchell on the nature of the imprecise language used in the OpenAI \"agents escaping sandbox and hacking Huggingface\" announcement.",
+    "author": "admin",
+    "created_at": "2026-09-15T15:21:38.687184+00:00",
+    "source": "user"
+  },
+  {
+    "id": "d1982d1490e94525b8cb4d7c7868182c",
+    "paper_url": "https://aiguide.substack.com/p/misleading-metaphors-and-real-risks",
+    "text": "",
+    "author": "admin",
+    "created_at": "2026-09-15T15:24:06.728025+00:00",
+    "source": "blog",
+    "blog_slug": "testing",
+    "blog_title": "Testing"
+  },
+  {
+    "id": "04d7e956457d48688dd752fa722744c5",
+    "paper_url": "https://arxiv.org/abs/1706.03762",
+    "text": "",
+    "author": "admin",
+    "created_at": "2026-09-15T15:24:06.728025+00:00",
+    "source": "blog",
+    "blog_slug": "testing",
+    "blog_title": "Testing"
+  }
+]
